@@ -59,11 +59,26 @@ class ModelManager:
     # Private helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _as_tensor(output) -> torch.Tensor:
+        """Extract a plain tensor from a model output.
+
+        Newer versions of transformers may return a BaseModelOutputWithPooling
+        object rather than a bare tensor from get_image/text_features.
+        """
+        if isinstance(output, torch.Tensor):
+            return output
+        if hasattr(output, "pooler_output") and output.pooler_output is not None:
+            return output.pooler_output
+        if hasattr(output, "last_hidden_state"):
+            return output.last_hidden_state[:, 0]  # CLS token
+        raise ValueError(f"Cannot extract feature tensor from {type(output)}")
+
     def _detect_dim(self) -> int:
         dummy = Image.new("RGB", (224, 224))
         inputs = self._processor(images=[dummy], return_tensors="pt").to(self._device)
         with torch.no_grad():
-            feats = self._model.get_image_features(**inputs)
+            feats = self._as_tensor(self._model.get_image_features(**inputs))
         return int(feats.shape[-1])
 
     # ------------------------------------------------------------------
@@ -81,7 +96,7 @@ class ModelManager:
         """
         inputs = self._processor(images=images, return_tensors="pt").to(self._device)
         with torch.no_grad():
-            feats = self._model.get_image_features(**inputs)
+            feats = self._as_tensor(self._model.get_image_features(**inputs))
         feats = feats / feats.norm(dim=-1, keepdim=True)
         return feats.cpu().float().numpy()
 
@@ -101,6 +116,6 @@ class ModelManager:
             truncation=True,
         ).to(self._device)
         with torch.no_grad():
-            feats = self._model.get_text_features(**inputs)
+            feats = self._as_tensor(self._model.get_text_features(**inputs))
         feats = feats / feats.norm(dim=-1, keepdim=True)
         return feats.cpu().float().numpy()

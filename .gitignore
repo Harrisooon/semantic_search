@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+.eggs/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# LanceDB / index data
+*.lance/
+*.lancedb/
+
+# OS
+.DS_Store
+Thumbs.db

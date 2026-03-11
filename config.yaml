@@ -1,6 +1,6 @@
 # Folders to index. Supports ~ expansion. Multiple folders share one index.
 watched_folders:
-  - ~/references
+  - D:/references
 
 # Where LanceDB stores its files.
 db_path: ~/.semantic_search/db
