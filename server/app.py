@@ -160,6 +160,38 @@ async def thumb(
 
 
 # ---------------------------------------------------------------------------
+# Similar images endpoint
+# ---------------------------------------------------------------------------
+
+@app.get("/similar")
+async def similar_endpoint(
+    path: str,
+    top: int = Query(default=40, ge=1, le=200),
+):
+    if store.count() == 0:
+        return {"results": [], "error": "Index is empty."}
+
+    embedding = store.get_embedding(path)
+    if embedding is None:
+        raise HTTPException(status_code=404, detail="Image not in index")
+
+    posix_path = Path(path).as_posix()
+    results = store.search(embedding, top_k=top + 1)
+    # Exclude the query image itself (it will be the top hit with score ~1.0).
+    # store.search returns posix paths; compare against normalised posix_path.
+    results = [(p, s) for p, s in results if p != posix_path][:top]
+
+    return {
+        "results": [
+            {"path": p, "filename": Path(p).name, "score": s}
+            for p, s in results
+        ],
+        "query_path": path,
+        "query_filename": Path(path).name,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Reindex endpoints
 # ---------------------------------------------------------------------------
 

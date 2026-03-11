@@ -155,6 +155,20 @@ class ImageStore:
     # Search
     # ------------------------------------------------------------------
 
+    def get_embedding(self, path: str) -> np.ndarray | None:
+        """Return the stored embedding for a given path, or None if not found."""
+        try:
+            import pyarrow.compute as pc
+            posix_path = Path(path).as_posix()
+            tbl = self.table.to_arrow()
+            filtered = tbl.filter(pc.equal(tbl["path"], posix_path))
+            if filtered.num_rows == 0:
+                return None
+            return np.array(filtered["embedding"][0].as_py(), dtype=np.float32)
+        except Exception as e:
+            logger.warning("get_embedding failed for %s: %s", path, e)
+            return None
+
     def search(self, vector: np.ndarray, top_k: int = 20) -> list[tuple[str, float]]:
         """Approximate nearest-neighbour search by cosine similarity.
 

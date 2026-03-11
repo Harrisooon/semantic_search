@@ -217,6 +217,49 @@
     .btn-copy:hover { border-color: var(--border-hover); color: var(--text); }
     .btn-copy.copied { color: #4ade80; border-color: #4ade80; }
 
+    .btn-similar {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--muted);
+      font-size: 10px;
+      padding: 3px 8px;
+      cursor: pointer;
+      transition: border-color 0.1s, color 0.1s;
+    }
+    .btn-similar:hover { border-color: var(--border-hover); color: var(--text); }
+
+    /* ── Similar mode banner ── */
+    #similar-banner {
+      display: none;
+      padding: 8px 24px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--muted);
+      gap: 10px;
+      align-items: center;
+    }
+    #similar-banner.active { display: flex; }
+    #similar-banner img {
+      width: 32px;
+      height: 32px;
+      object-fit: cover;
+      border-radius: 3px;
+      flex-shrink: 0;
+    }
+    #similar-clear {
+      margin-left: auto;
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--muted);
+      font-size: 11px;
+      padding: 3px 10px;
+      cursor: pointer;
+    }
+    #similar-clear:hover { border-color: var(--border-hover); color: var(--text); }
+
     /* ── Empty / error states ── */
     .placeholder {
       grid-column: 1 / -1;
@@ -289,6 +332,12 @@
       <span id="reindex-label">reindex</span>
     </button>
   </header>
+
+  <div id="similar-banner">
+    <img id="similar-thumb" src="" alt="" />
+    <span id="similar-label"></span>
+    <button id="similar-clear" onclick="clearSimilar()">✕ clear</button>
+  </div>
 
   <div id="statusbar">
     <div class="spinner" id="spinner"></div>
@@ -372,14 +421,14 @@
       spinner.classList.remove('active');
 
       if (results.length === 0) {
-        setStatus(`No results for "${q}"`);
+        setStatus(q ? `No results for "${q}"` : 'No similar images found.');
         grid.innerHTML = '<div class="placeholder"><strong>No results found.</strong>Try a different query.</div>';
         countEl.textContent = '';
         return;
       }
 
       const noun = results.length === 1 ? 'result' : 'results';
-      setStatus(`${results.length} ${noun} for "${q}"`);
+      if (q) setStatus(`${results.length} ${noun} for "${q}"`);
       countEl.textContent = '';
 
       grid.innerHTML = results.map((r, i) => {
@@ -394,6 +443,7 @@
             </div>
             <div class="card-actions">
               <button class="btn-copy" onclick="copyPath(event, this, '${escAttr(r.path)}')">copy path</button>
+              <button class="btn-similar" onclick="runSimilar(event, '${escAttr(r.path)}')">find similar</button>
             </div>
           </div>`;
       }).join('');
@@ -401,7 +451,7 @@
       // Open lightbox on card click (but not on the copy button)
       grid.querySelectorAll('.card').forEach(card => {
         card.addEventListener('click', e => {
-          if (e.target.closest('.btn-copy')) return;
+          if (e.target.closest('.btn-copy') || e.target.closest('.btn-similar')) return;
           openLightbox(card.dataset.path, card.dataset.thumb);
         });
       });
@@ -439,6 +489,56 @@
         setTimeout(() => { btn.textContent = 'copy path'; }, 1500);
       }
     }
+
+    // ── Find similar ──
+    const similarBanner = document.getElementById('similar-banner');
+    const similarThumb  = document.getElementById('similar-thumb');
+    const similarLabel  = document.getElementById('similar-label');
+
+    async function runSimilar(e, path) {
+      e.stopPropagation();
+      setStatus('', true);
+      currentQuery = '';
+      searchInput.value = '';
+
+      const thumbUrl = `/thumb?path=${encodeURIComponent(path)}&size=400`;
+      similarThumb.src = thumbUrl;
+      similarLabel.textContent = `Similar to: ${path.split('/').pop()}`;
+      similarBanner.classList.add('active');
+
+      try {
+        const res  = await fetch(`/similar?path=${encodeURIComponent(path)}&top=60`);
+        const data = await res.json();
+        if (!res.ok || data.error) {
+          const msg = data.detail || data.error || 'Unknown error';
+          setStatus(`Error: ${msg}`);
+          grid.innerHTML = `<div class="placeholder"><strong>Error</strong>${escHtml(String(msg))}</div>`;
+          return;
+        }
+        const results = data.results || [];
+        renderResults(results, null);
+        const noun = results.length === 1 ? 'result' : 'results';
+        setStatus(`${results.length} ${noun} visually similar to "${data.query_filename}"`);
+      } catch (err) {
+        setStatus(`Error: ${err.message}`);
+      }
+    }
+
+    function clearSimilar() {
+      similarBanner.classList.remove('active');
+      similarThumb.src = '';
+      grid.innerHTML = '<div class="placeholder"><strong>Your reference library, searchable.</strong>Type any descriptive phrase in the search bar above.</div>';
+      setStatus('Type a query to search your library.');
+      countEl.textContent = '';
+    }
+
+    // Typing in search bar clears similar mode
+    searchInput.addEventListener('focus', () => {
+      if (similarBanner.classList.contains('active')) {
+        similarBanner.classList.remove('active');
+        similarThumb.src = '';
+      }
+    });
 
     // ── Reindex ──
     const reindexBtn   = document.getElementById('reindex-btn');
@@ -500,7 +600,9 @@
       return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
     function escAttr(s) {
-      return s.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+      // Escape backslashes first so Windows paths don't produce JS escape sequences
+      // (e.g. \r in D:\references would be interpreted as carriage return).
+      return s.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
     }
   </script>
 </body>
