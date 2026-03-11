@@ -1,15 +1,19 @@
 """FastAPI web server.
 
 Endpoints:
-  GET /              — search UI
-  GET /search?q=...  — JSON search results
-  GET /thumb?path=...&size=... — on-the-fly JPEG thumbnail
+  GET  /               — search UI
+  GET  /search?q=...   — JSON search results
+  GET  /thumb?path=... — on-the-fly JPEG thumbnail
+  POST /reindex        — trigger incremental reindex in background
+  GET  /reindex/status — poll reindex job status
 """
 
 from __future__ import annotations
 
 import io
 import logging
+import threading
+import time
 from pathlib import Path
 
 import uvicorn
@@ -43,6 +47,41 @@ store = ImageStore(cfg["db_path"], embedding_dim=model.embedding_dim)
 
 app = FastAPI(title="semantic_search", docs_url=None, redoc_url=None)
 templates = Jinja2Templates(directory=_HERE / "templates")
+
+# ---------------------------------------------------------------------------
+# Reindex job state
+# ---------------------------------------------------------------------------
+
+class _ReindexJob:
+    def __init__(self):
+        self.running = False
+        self.last_result: dict | None = None
+        self.last_run: float | None = None
+        self._lock = threading.Lock()
+
+    def start(self) -> bool:
+        """Returns False if already running."""
+        with self._lock:
+            if self.running:
+                return False
+            self.running = True
+            return True
+
+    def finish(self, result: dict):
+        with self._lock:
+            self.running = False
+            self.last_result = result
+            self.last_run = time.time()
+
+    def status(self) -> dict:
+        with self._lock:
+            return {
+                "running": self.running,
+                "last_result": self.last_result,
+                "last_run": self.last_run,
+            }
+
+_job = _ReindexJob()
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +157,41 @@ async def thumb(
     except Exception as e:
         logger.error("Failed to serve thumb for %s: %s", path, e)
         raise HTTPException(status_code=500, detail="Could not load image")
+
+
+# ---------------------------------------------------------------------------
+# Reindex endpoints
+# ---------------------------------------------------------------------------
+
+def _run_reindex():
+    from semantic_search.indexer import index_folders
+    try:
+        result = index_folders(
+            folders=cfg["watched_folders"],
+            store=store,
+            model=model,
+            supported_extensions=cfg["supported_extensions"],
+            batch_size=cfg["batch_size"],
+        )
+        _job.finish(result)
+        logger.info("Reindex complete: %s", result)
+    except Exception as e:
+        logger.error("Reindex failed: %s", e)
+        _job.finish({"error": str(e)})
+
+
+@app.post("/reindex")
+async def reindex():
+    if not _job.start():
+        return {"started": False, "message": "Reindex already in progress"}
+    thread = threading.Thread(target=_run_reindex, daemon=True)
+    thread.start()
+    return {"started": True}
+
+
+@app.get("/reindex/status")
+async def reindex_status():
+    return _job.status()
 
 
 # ---------------------------------------------------------------------------

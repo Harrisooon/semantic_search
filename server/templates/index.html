@@ -86,6 +86,35 @@
       white-space: nowrap;
     }
 
+    #reindex-btn {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      padding: 7px 13px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: border-color 0.15s, color 0.15s;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    #reindex-btn:hover:not(:disabled) { border-color: var(--border-hover); color: var(--text); }
+    #reindex-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    #reindex-btn.running { color: var(--muted); }
+
+    .ri-spinner {
+      width: 10px;
+      height: 10px;
+      border: 1.5px solid var(--border);
+      border-top-color: var(--muted);
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      display: none;
+    }
+    #reindex-btn.running .ri-spinner { display: block; }
+
     /* ── Status bar ── */
     #statusbar {
       padding: 10px 24px;
@@ -255,6 +284,10 @@
         autocomplete="off" spellcheck="false" autofocus />
     </div>
     <span id="count"></span>
+    <button id="reindex-btn" title="Scan watched folders for new or changed images">
+      <div class="ri-spinner"></div>
+      <span id="reindex-label">reindex</span>
+    </button>
   </header>
 
   <div id="statusbar">
@@ -406,6 +439,56 @@
         setTimeout(() => { btn.textContent = 'copy path'; }, 1500);
       }
     }
+
+    // ── Reindex ──
+    const reindexBtn   = document.getElementById('reindex-btn');
+    const reindexLabel = document.getElementById('reindex-label');
+    let reindexPollTimer = null;
+
+    reindexBtn.addEventListener('click', async () => {
+      const res  = await fetch('/reindex', { method: 'POST' });
+      const data = await res.json();
+      if (data.started) {
+        setReindexRunning(true);
+        pollReindexStatus();
+      }
+    });
+
+    function setReindexRunning(running) {
+      reindexBtn.disabled = running;
+      reindexBtn.classList.toggle('running', running);
+      reindexLabel.textContent = running ? 'indexing…' : 'reindex';
+    }
+
+    function pollReindexStatus() {
+      clearTimeout(reindexPollTimer);
+      reindexPollTimer = setTimeout(async () => {
+        try {
+          const res  = await fetch('/reindex/status');
+          const data = await res.json();
+          if (data.running) {
+            pollReindexStatus(); // keep polling
+          } else {
+            setReindexRunning(false);
+            if (data.last_result) {
+              const r = data.last_result;
+              if (r.error) {
+                setStatus(`Reindex failed: ${r.error}`);
+              } else {
+                setStatus(`Reindex done — ${r.indexed} new, ${r.skipped} unchanged, ${r.failed} failed`);
+              }
+            }
+          }
+        } catch {
+          setReindexRunning(false);
+        }
+      }, 1500);
+    }
+
+    // Restore running state if page is refreshed mid-job
+    fetch('/reindex/status').then(r => r.json()).then(data => {
+      if (data.running) { setReindexRunning(true); pollReindexStatus(); }
+    });
 
     // ── Helpers ──
     function setStatus(msg, loading = false) {
