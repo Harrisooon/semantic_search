@@ -160,6 +160,38 @@ async def thumb(
 
 
 # ---------------------------------------------------------------------------
+# Raw file endpoint (used for animated GIFs so animation is preserved)
+# ---------------------------------------------------------------------------
+
+@app.get("/raw")
+async def raw(path: str):
+    file_path = Path(path)
+
+    if not _is_allowed(file_path):
+        raise HTTPException(status_code=403, detail="Path not in a watched folder")
+
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    suffix = file_path.suffix.lower()
+    media_types = {
+        ".gif": "image/gif",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+    }
+    media_type = media_types.get(suffix, "application/octet-stream")
+
+    return Response(
+        content=file_path.read_bytes(),
+        media_type=media_type,
+        headers={"Cache-Control": "max-age=86400"},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Similar images endpoint
 # ---------------------------------------------------------------------------
 

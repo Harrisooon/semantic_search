@@ -169,23 +169,46 @@ class ImageStore:
             logger.warning("get_embedding failed for %s: %s", path, e)
             return None
 
-    def search(self, vector: np.ndarray, top_k: int = 20) -> list[tuple[str, float]]:
+    def search(
+        self,
+        vector: np.ndarray,
+        top_k: int = 20,
+        deduplicate: bool = True,
+    ) -> list[tuple[str, float]]:
         """Approximate nearest-neighbour search by cosine similarity.
 
         Args:
-            vector: L2-normalised float32 array of shape (D,).
-            top_k:  number of results to return.
+            vector:      L2-normalised float32 array of shape (D,).
+            top_k:       number of results to return.
+            deduplicate: if True (default), only the highest-scoring image is
+                         kept when multiple paths share the same file_hash.
 
         Returns:
             List of (path, score) sorted by descending score.
             Score is cosine similarity in [−1, 1]; 1.0 = identical.
         """
+        # Fetch extra results so deduplication still yields top_k after filtering.
+        fetch_k = top_k * 4 if deduplicate else top_k
         results = (
             self.table.search(vector.tolist(), vector_column_name="embedding")
             .metric("cosine")
-            .limit(top_k)
+            .limit(fetch_k)
             .to_list()
         )
+
+        if deduplicate:
+            seen_hashes: set[str] = set()
+            deduped = []
+            for r in results:
+                h = r.get("file_hash") or ""
+                if h and h in seen_hashes:
+                    continue
+                seen_hashes.add(h)
+                deduped.append(r)
+                if len(deduped) == top_k:
+                    break
+            results = deduped
+
         # LanceDB cosine metric returns distance = 1 − similarity.
         return [(r["path"], round(1.0 - r["_distance"], 4)) for r in results]
 

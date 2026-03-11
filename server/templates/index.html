@@ -170,6 +170,24 @@
       background: var(--bg);
     }
 
+    .card-thumb-wrap {
+      position: relative;
+    }
+    .gif-badge {
+      position: absolute;
+      top: 6px;
+      left: 6px;
+      background: rgba(0,0,0,0.55);
+      color: #d4d4d8;
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      padding: 2px 5px;
+      border-radius: 3px;
+      pointer-events: none;
+      user-select: none;
+    }
+
     .card-meta {
       padding: 7px 10px;
       display: flex;
@@ -196,38 +214,31 @@
     }
     .card:hover .card-score { color: var(--muted); }
 
-    /* ── Copy path button (appears on hover) ── */
+    /* ── Action buttons — overlaid on the image on hover ── */
     .card-actions {
-      padding: 0 10px 8px;
+      position: absolute;
+      bottom: 8px;
+      left: 0;
+      right: 0;
       display: none;
       gap: 6px;
+      justify-content: center;
     }
     .card:hover .card-actions { display: flex; }
 
-    .btn-copy {
-      background: none;
-      border: 1px solid var(--border);
+    .btn-copy, .btn-similar {
+      background: rgba(0,0,0,0.6);
+      border: 1px solid rgba(255,255,255,0.15);
       border-radius: 4px;
-      color: var(--muted);
+      color: #d4d4d8;
       font-size: 10px;
-      padding: 3px 8px;
+      padding: 4px 8px;
       cursor: pointer;
       transition: border-color 0.1s, color 0.1s;
+      white-space: nowrap;
     }
-    .btn-copy:hover { border-color: var(--border-hover); color: var(--text); }
+    .btn-copy:hover, .btn-similar:hover { border-color: rgba(255,255,255,0.35); color: #fff; }
     .btn-copy.copied { color: #4ade80; border-color: #4ade80; }
-
-    .btn-similar {
-      background: none;
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      color: var(--muted);
-      font-size: 10px;
-      padding: 3px 8px;
-      cursor: pointer;
-      transition: border-color 0.1s, color 0.1s;
-    }
-    .btn-similar:hover { border-color: var(--border-hover); color: var(--text); }
 
     /* ── Similar mode banner ── */
     #similar-banner {
@@ -295,22 +306,41 @@
       cursor: default;
       box-shadow: 0 8px 48px rgba(0,0,0,0.6);
     }
-    #lightbox-path {
+    #lightbox-bar {
       position: fixed;
       bottom: 20px;
       left: 50%;
       transform: translateX(-50%);
       background: rgba(0,0,0,0.7);
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px 6px 14px;
+      max-width: 80vw;
+    }
+    #lightbox-path {
       color: #aaa;
       font-size: 11px;
-      padding: 6px 14px;
-      border-radius: 20px;
-      max-width: 80vw;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
       pointer-events: none;
     }
+    .lb-btn {
+      background: none;
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 4px;
+      color: #aaa;
+      font-size: 10px;
+      padding: 3px 8px;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+      transition: border-color 0.1s, color 0.1s;
+    }
+    .lb-btn:hover { border-color: rgba(255,255,255,0.4); color: #eee; }
+    .lb-btn.copied { color: #4ade80; border-color: #4ade80; }
   </style>
 </head>
 <body>
@@ -354,7 +384,11 @@
   <!-- Lightbox -->
   <div id="lightbox" onclick="closeLightbox()">
     <img id="lightbox-img" src="" alt="" onclick="event.stopPropagation()" />
-    <div id="lightbox-path"></div>
+    <div id="lightbox-bar" onclick="event.stopPropagation()">
+      <span id="lightbox-path"></span>
+      <button class="lb-btn" id="lb-copy-btn" onclick="lbCopyPath()">copy path</button>
+      <button class="lb-btn" onclick="lbFindSimilar()">find similar</button>
+    </div>
   </div>
 
   <script>
@@ -432,35 +466,45 @@
       countEl.textContent = '';
 
       grid.innerHTML = results.map((r, i) => {
-        const thumb = `/thumb?path=${encodeURIComponent(r.path)}&size=400`;
+        const thumb = imgUrl(r.path, 400);
         const pct   = (r.score * 100).toFixed(1);
         return `
           <div class="card" data-path="${escHtml(r.path)}" data-thumb="${escHtml(thumb)}">
-            <img class="card-thumb" src="${escHtml(thumb)}" alt="${escHtml(r.filename)}" loading="${i < 20 ? 'eager' : 'lazy'}" />
+            <div class="card-thumb-wrap">
+              <img class="card-thumb" src="${escHtml(thumb)}" alt="${escHtml(r.filename)}" loading="${i < 20 ? 'eager' : 'lazy'}" />
+              ${isGif(r.path) ? '<span class="gif-badge">GIF</span>' : ''}
+              <div class="card-actions">
+                <button class="btn-copy" onclick="copyPath(event, this, '${escAttr(r.path)}')">copy path</button>
+                <button class="btn-similar" onclick="runSimilar(event, '${escAttr(r.path)}')">find similar</button>
+              </div>
+            </div>
             <div class="card-meta">
               <span class="card-name" title="${escHtml(r.path)}">${escHtml(r.filename)}</span>
               <span class="card-score">${pct}%</span>
-            </div>
-            <div class="card-actions">
-              <button class="btn-copy" onclick="copyPath(event, this, '${escAttr(r.path)}')">copy path</button>
-              <button class="btn-similar" onclick="runSimilar(event, '${escAttr(r.path)}')">find similar</button>
             </div>
           </div>`;
       }).join('');
 
       // Open lightbox on card click (but not on the copy button)
+      // For GIFs: animate on hover, static thumb otherwise.
       grid.querySelectorAll('.card').forEach(card => {
         card.addEventListener('click', e => {
           if (e.target.closest('.btn-copy') || e.target.closest('.btn-similar')) return;
           openLightbox(card.dataset.path, card.dataset.thumb);
         });
+        if (isGif(card.dataset.path)) {
+          const img = card.querySelector('.card-thumb');
+          card.addEventListener('mouseenter', () => { img.src = rawUrl(card.dataset.path); });
+          card.addEventListener('mouseleave', () => { img.src = card.dataset.thumb; });
+        }
+
       });
     }
 
     // ── Lightbox ──
     function openLightbox(path, thumbUrl) {
-      // Load a larger version for the lightbox
-      lbImg.src = `/thumb?path=${encodeURIComponent(path)}&size=1920`;
+      // GIFs: serve raw so they animate. Others: large thumbnail.
+      lbImg.src = isGif(path) ? rawUrl(path) : imgUrl(path, 1920);
       lbImg.alt = path;
       lbPath.textContent = path;
       lightbox.classList.add('open');
@@ -471,6 +515,25 @@
       lightbox.classList.remove('open');
       lbImg.src = '';
       document.body.style.overflow = '';
+    }
+
+    async function lbCopyPath() {
+      const btn = document.getElementById('lb-copy-btn');
+      try {
+        await navigator.clipboard.writeText(lbPath.textContent);
+        btn.textContent = 'copied!';
+        btn.classList.add('copied');
+        setTimeout(() => { btn.textContent = 'copy path'; btn.classList.remove('copied'); }, 1500);
+      } catch {
+        btn.textContent = 'failed';
+        setTimeout(() => { btn.textContent = 'copy path'; }, 1500);
+      }
+    }
+
+    function lbFindSimilar() {
+      const path = lbPath.textContent;
+      closeLightbox();
+      runSimilar({ stopPropagation: () => {} }, path);
     }
 
     // ── Copy path ──
@@ -501,7 +564,7 @@
       currentQuery = '';
       searchInput.value = '';
 
-      const thumbUrl = `/thumb?path=${encodeURIComponent(path)}&size=400`;
+      const thumbUrl = imgUrl(path, 400);
       similarThumb.src = thumbUrl;
       similarLabel.textContent = `Similar to: ${path.split('/').pop()}`;
       similarBanner.classList.add('active');
@@ -576,6 +639,7 @@
                 setStatus(`Reindex failed: ${r.error}`);
               } else {
                 setStatus(`Reindex done — ${r.indexed} new, ${r.skipped} unchanged, ${r.failed} failed`);
+                if (currentQuery) runSearch(currentQuery);
               }
             }
           }
@@ -591,6 +655,18 @@
     });
 
     // ── Helpers ──
+    function imgUrl(path, size) {
+      return `/thumb?path=${encodeURIComponent(path)}&size=${size}`;
+    }
+
+    function isGif(path) {
+      return path.toLowerCase().endsWith('.gif');
+    }
+
+    function rawUrl(path) {
+      return `/raw?path=${encodeURIComponent(path)}`;
+    }
+
     function setStatus(msg, loading = false) {
       spinner.classList.toggle('active', loading);
       statusText.textContent = msg;

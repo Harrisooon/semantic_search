@@ -19,6 +19,7 @@ batch_size: 32
 
 # File extensions to index. Case-insensitive.
 supported_extensions:
+  - .gif
   - .png
   - .jpg
   - .jpeg
