@@ -1,0 +1,29 @@
+# Folders to index. Supports ~ expansion. Multiple folders share one index.
+watched_folders:
+  - ~/references
+
+# Where LanceDB stores its files.
+db_path: ~/.semantic_search/db
+
+# SigLIP 2 model to use for embedding.
+model_variant: google/siglip2-base-patch16-224
+
+# Device for model inference.
+# "auto" picks CUDA if available, otherwise CPU.
+# Explicit options: "cpu", "cuda", "cuda:0", "cuda:1"
+device: auto
+
+# Images per model forward pass. Increase for better GPU utilisation;
+# decrease if you run out of VRAM.
+batch_size: 32
+
+# File extensions to index. Case-insensitive.
+supported_extensions:
+  - .png
+  - .jpg
+  - .jpeg
+  - .tga
+  - .bmp
+  - .tiff
+  - .webp
+  - .exr

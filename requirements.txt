@@ -1,0 +1,26 @@
+# If you have a GPU, install PyTorch with CUDA support FIRST (before the rest):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+# Adjust the cu121 suffix to match your installed CUDA version.
+# Then run: pip install -r requirements.txt
+
+torch>=2.1
+torchvision>=0.16
+transformers>=4.40
+Pillow>=10.0
+lancedb>=0.6
+pyarrow>=14.0
+lance>=0.9
+pyyaml>=6.0
+tqdm>=4.0
+numpy>=1.24
+
+# Optional — filesystem watcher (auto-reindex on file changes):
+# watchdog>=3.0
+
+# Optional — web UI server:
+# fastapi>=0.110
+# uvicorn[standard]>=0.27
+# python-multipart>=0.0.9
+
+# Optional — EXR support (requires OpenEXR C++ libs installed on your OS first):
+# openexr>=3.0

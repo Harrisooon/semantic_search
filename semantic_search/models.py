@@ -1,0 +1,106 @@
+"""SigLIP 2 model loading and encoding.
+
+A single ModelManager instance is created per process and reused for both
+indexing and search — the model is only loaded once.
+"""
+
+from __future__ import annotations
+
+import logging
+
+import numpy as np
+import torch
+from PIL import Image
+from transformers import AutoModel, AutoProcessor
+
+logger = logging.getLogger(__name__)
+
+_DEFAULT_MODEL = "google/siglip2-base-patch16-224"
+
+
+def resolve_device(device: str) -> str:
+    """Resolve "auto" to the best available device string."""
+    if device == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    return device
+
+
+class ModelManager:
+    """Loads a SigLIP 2 model once and exposes encode_image / encode_text.
+
+    Both methods return L2-normalised float32 numpy arrays of shape (N, D),
+    ready to store in or compare against LanceDB.
+    """
+
+    def __init__(
+        self,
+        model_variant: str = _DEFAULT_MODEL,
+        device: str = "auto",
+    ) -> None:
+        self._device = torch.device(resolve_device(device))
+        logger.info("Loading %s on %s ...", model_variant, self._device)
+
+        self._processor = AutoProcessor.from_pretrained(model_variant)
+        self._model = (
+            AutoModel.from_pretrained(model_variant)
+            .to(self._device)
+            .eval()
+        )
+
+        # Detect output dimension with a single dummy forward pass.
+        self.embedding_dim: int = self._detect_dim()
+        logger.info(
+            "Model ready — embedding dim: %d, device: %s",
+            self.embedding_dim,
+            self._device,
+        )
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _detect_dim(self) -> int:
+        dummy = Image.new("RGB", (224, 224))
+        inputs = self._processor(images=[dummy], return_tensors="pt").to(self._device)
+        with torch.no_grad():
+            feats = self._model.get_image_features(**inputs)
+        return int(feats.shape[-1])
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def encode_image(self, images: list[Image.Image]) -> np.ndarray:
+        """Embed a batch of PIL Images.
+
+        Args:
+            images: list of RGB PIL Images (any size — the processor resizes them).
+
+        Returns:
+            Float32 array of shape (N, D), L2-normalised.
+        """
+        inputs = self._processor(images=images, return_tensors="pt").to(self._device)
+        with torch.no_grad():
+            feats = self._model.get_image_features(**inputs)
+        feats = feats / feats.norm(dim=-1, keepdim=True)
+        return feats.cpu().float().numpy()
+
+    def encode_text(self, texts: list[str]) -> np.ndarray:
+        """Embed a batch of text strings.
+
+        Args:
+            texts: list of query strings.
+
+        Returns:
+            Float32 array of shape (N, D), L2-normalised.
+        """
+        inputs = self._processor(
+            text=texts,
+            return_tensors="pt",
+            padding="max_length",
+            truncation=True,
+        ).to(self._device)
+        with torch.no_grad():
+            feats = self._model.get_text_features(**inputs)
+        feats = feats / feats.norm(dim=-1, keepdim=True)
+        return feats.cpu().float().numpy()
