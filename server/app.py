@@ -199,6 +199,10 @@ async def reindex_status():
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    print(f"Starting server — open http://localhost:8000 in your browser")
+    import webbrowser
+    url = "http://localhost:8000"
+    print(f"Starting server — {url}")
     print(f"Index: {store.count()} images")
+    # Open browser after a short delay so the server is ready to accept connections.
+    threading.Timer(1.5, lambda: webbrowser.open(url)).start()
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")

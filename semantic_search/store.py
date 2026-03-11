@@ -74,22 +74,28 @@ class ImageStore:
         except Exception:
             return 0
 
+    def _read_columns(self, columns: list[str]) -> dict[str, list]:
+        """Read specific columns, returning {column_name: [values]} dict."""
+        # to_arrow() with column selection — efficient and works with current lancedb
+        try:
+            tbl = self.table.to_arrow().select(columns)
+            return {col: tbl[col].to_pylist() for col in columns}
+        except Exception as e:
+            logger.warning("to_arrow() failed (%s), falling back to to_pandas()", e)
+
+        # Fallback: pandas loads all columns including embeddings, but always works
+        df = self.table.to_pandas()
+        return {col: df[col].tolist() for col in columns}
+
     def get_all_hashes(self) -> dict[str, str]:
         """Return {path: file_hash} for every indexed file."""
         if self.count() == 0:
             return {}
         try:
-            arrow_tbl = (
-                self.table.to_lance()
-                .scanner(columns=["path", "file_hash"])
-                .to_table()
-            )
-            return dict(
-                zip(
-                    arrow_tbl["path"].to_pylist(),
-                    arrow_tbl["file_hash"].to_pylist(),
-                )
-            )
+            data = self._read_columns(["path", "file_hash"])
+            result = dict(zip(data["path"], data["file_hash"]))
+            logger.info("Loaded %d stored hashes", len(result))
+            return result
         except Exception as e:
             logger.warning("Could not read hashes from store: %s", e)
             return {}
@@ -99,12 +105,8 @@ class ImageStore:
         if self.count() == 0:
             return set()
         try:
-            arrow_tbl = (
-                self.table.to_lance()
-                .scanner(columns=["path"])
-                .to_table()
-            )
-            return set(arrow_tbl["path"].to_pylist())
+            data = self._read_columns(["path"])
+            return set(data["path"])
         except Exception as e:
             logger.warning("Could not read paths from store: %s", e)
             return set()
@@ -182,13 +184,9 @@ class ImageStore:
         if self.count() == 0:
             return {"total": 0, "by_folder": {}, "last_indexed": None}
         try:
-            arrow_tbl = (
-                self.table.to_lance()
-                .scanner(columns=["path", "indexed_at"])
-                .to_table()
-            )
-            paths = arrow_tbl["path"].to_pylist()
-            times = arrow_tbl["indexed_at"].to_pylist()
+            data  = self._read_columns(["path", "indexed_at"])
+            paths = data["path"]
+            times = data["indexed_at"]
         except Exception as e:
             logger.warning("Could not read stats: %s", e)
             return {"total": 0, "by_folder": {}, "last_indexed": None}
