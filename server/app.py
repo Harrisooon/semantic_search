@@ -111,7 +111,7 @@ async def index(request: Request):
 
 @app.get("/search")
 async def search_endpoint(
-    q: str = Query(min_length=1),
+    q: str = Query(min_length=1, max_length=500),
     top: int = Query(default=40, ge=1, le=200),
 ):
     if store.count() == 0:
@@ -152,7 +152,7 @@ async def thumb(
         return Response(
             content=buf.getvalue(),
             media_type="image/jpeg",
-            headers={"Cache-Control": "max-age=86400"},
+            headers={"Cache-Control": "no-cache"},
         )
     except Exception as e:
         logger.error("Failed to serve thumb for %s: %s", path, e)
@@ -181,13 +181,16 @@ async def raw(path: str):
         ".jpeg": "image/jpeg",
         ".webp": "image/webp",
         ".bmp": "image/bmp",
+        ".tiff": "image/tiff",
+        ".tga": "image/x-tga",
+        ".exr": "image/x-exr",
     }
     media_type = media_types.get(suffix, "application/octet-stream")
 
     return Response(
         content=file_path.read_bytes(),
         media_type=media_type,
-        headers={"Cache-Control": "max-age=86400"},
+        headers={"Cache-Control": "no-cache"},
     )
 
 
@@ -229,6 +232,7 @@ async def similar_endpoint(
 
 def _run_reindex():
     from semantic_search.indexer import index_folders
+    result = None
     try:
         result = index_folders(
             folders=cfg["watched_folders"],
@@ -237,11 +241,12 @@ def _run_reindex():
             supported_extensions=cfg["supported_extensions"],
             batch_size=cfg["batch_size"],
         )
-        _job.finish(result)
         logger.info("Reindex complete: %s", result)
     except Exception as e:
         logger.error("Reindex failed: %s", e)
-        _job.finish({"error": str(e)})
+        result = {"error": str(e)}
+    finally:
+        _job.finish(result or {"error": "Reindex did not complete"})
 
 
 @app.post("/reindex")

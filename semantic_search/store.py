@@ -143,10 +143,11 @@ class ImageStore:
         stale_list = list(stale)
         for i in range(0, len(stale_list), 100):
             batch = stale_list[i : i + 100]
-            # Escape single quotes in paths to avoid breaking the SQL expression.
+            # LanceDB delete() takes a SQL WHERE expression; escape single quotes.
             escaped = [p.replace("'", "''") for p in batch]
             expr = "path IN (" + ", ".join(f"'{p}'" for p in escaped) + ")"
             self.table.delete(expr)
+
 
         logger.info("Removed %d stale records", len(stale))
         return len(stale)

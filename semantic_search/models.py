@@ -10,6 +10,7 @@ import logging
 
 import numpy as np
 import torch
+from huggingface_hub.utils import LocalEntryNotFoundError
 from PIL import Image
 from transformers import AutoModel, AutoProcessor
 
@@ -40,12 +41,21 @@ class ModelManager:
         self._device = torch.device(resolve_device(device))
         logger.info("Loading %s on %s ...", model_variant, self._device)
 
-        self._processor = AutoProcessor.from_pretrained(model_variant)
-        self._model = (
-            AutoModel.from_pretrained(model_variant)
-            .to(self._device)
-            .eval()
-        )
+        try:
+            self._processor = AutoProcessor.from_pretrained(model_variant, local_files_only=True)
+            self._model = (
+                AutoModel.from_pretrained(model_variant, local_files_only=True)
+                .to(self._device)
+                .eval()
+            )
+        except (LocalEntryNotFoundError, OSError):
+            logger.info("Model not cached — downloading from Hugging Face...")
+            self._processor = AutoProcessor.from_pretrained(model_variant)
+            self._model = (
+                AutoModel.from_pretrained(model_variant)
+                .to(self._device)
+                .eval()
+            )
 
         # Detect output dimension with a single dummy forward pass.
         self.embedding_dim: int = self._detect_dim()
@@ -97,7 +107,7 @@ class ModelManager:
         inputs = self._processor(images=images, return_tensors="pt").to(self._device)
         with torch.no_grad():
             feats = self._as_tensor(self._model.get_image_features(**inputs))
-        feats = feats / feats.norm(dim=-1, keepdim=True)
+        feats = feats / feats.norm(dim=-1, keepdim=True).clamp(min=1e-8)
         return feats.cpu().float().numpy()
 
     def encode_text(self, texts: list[str]) -> np.ndarray:
@@ -117,5 +127,5 @@ class ModelManager:
         ).to(self._device)
         with torch.no_grad():
             feats = self._as_tensor(self._model.get_text_features(**inputs))
-        feats = feats / feats.norm(dim=-1, keepdim=True)
+        feats = feats / feats.norm(dim=-1, keepdim=True).clamp(min=1e-8)
         return feats.cpu().float().numpy()

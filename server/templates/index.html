@@ -401,8 +401,10 @@
     const lbImg       = document.getElementById('lightbox-img');
     const lbPath      = document.getElementById('lightbox-path');
 
-    let debounceTimer = null;
-    let currentQuery  = '';
+    let debounceTimer        = null;
+    let currentQuery         = '';
+    let currentResults       = [];
+    let currentLightboxIndex = -1;
 
     // ── Fetch index count on load ──
     fetch('/search?q=a&top=1')
@@ -425,9 +427,12 @@
       debounceTimer = setTimeout(() => runSearch(q), 280);
     });
 
-    // Escape closes lightbox
+    // Lightbox keyboard navigation
     document.addEventListener('keydown', e => {
-      if (e.key === 'Escape') closeLightbox();
+      if (!lightbox.classList.contains('open')) return;
+      if (e.key === 'Escape') { closeLightbox(); return; }
+      if (e.key === 'ArrowRight') navigateLightbox(1);
+      if (e.key === 'ArrowLeft')  navigateLightbox(-1);
     });
 
     // ── Search ──
@@ -452,6 +457,7 @@
     }
 
     function renderResults(results, q) {
+      currentResults = results;
       spinner.classList.remove('active');
 
       if (results.length === 0) {
@@ -469,7 +475,7 @@
         const thumb = imgUrl(r.path, 400);
         const pct   = (r.score * 100).toFixed(1);
         return `
-          <div class="card" data-path="${escHtml(r.path)}" data-thumb="${escHtml(thumb)}">
+          <div class="card" data-path="${escHtml(r.path)}" data-thumb="${escHtml(thumb)}" data-index="${i}">
             <div class="card-thumb-wrap">
               <img class="card-thumb" src="${escHtml(thumb)}" alt="${escHtml(r.filename)}" loading="${i < 20 ? 'eager' : 'lazy'}" />
               ${isGif(r.path) ? '<span class="gif-badge">GIF</span>' : ''}
@@ -490,7 +496,7 @@
       grid.querySelectorAll('.card').forEach(card => {
         card.addEventListener('click', e => {
           if (e.target.closest('.btn-copy') || e.target.closest('.btn-similar')) return;
-          openLightbox(card.dataset.path, card.dataset.thumb);
+          openLightbox(card.dataset.path, card.dataset.thumb, parseInt(card.dataset.index));
         });
         if (isGif(card.dataset.path)) {
           const img = card.querySelector('.card-thumb');
@@ -502,13 +508,22 @@
     }
 
     // ── Lightbox ──
-    function openLightbox(path, thumbUrl) {
+    function openLightbox(path, thumbUrl, index = -1) {
       // GIFs: serve raw so they animate. Others: large thumbnail.
       lbImg.src = isGif(path) ? rawUrl(path) : imgUrl(path, 1920);
       lbImg.alt = path;
       lbPath.textContent = path;
+      currentLightboxIndex = index;
       lightbox.classList.add('open');
       document.body.style.overflow = 'hidden';
+    }
+
+    function navigateLightbox(dir) {
+      if (currentResults.length === 0 || currentLightboxIndex === -1) return;
+      const next = currentLightboxIndex + dir;
+      if (next < 0 || next >= currentResults.length) return;
+      const r = currentResults[next];
+      openLightbox(r.path, imgUrl(r.path, 400), next);
     }
 
     function closeLightbox() {
@@ -638,7 +653,7 @@
               if (r.error) {
                 setStatus(`Reindex failed: ${r.error}`);
               } else {
-                setStatus(`Reindex done — ${r.indexed} new, ${r.skipped} unchanged, ${r.failed} failed`);
+                setStatus(`Reindex done — ${r.indexed} new, ${r.skipped} unchanged, ${r.failed} failed, ${r.stale_removed} removed`);
                 if (currentQuery) runSearch(currentQuery);
               }
             }

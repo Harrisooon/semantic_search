@@ -37,6 +37,7 @@ Everything runs on your local machine. Nothing is sent to an external server.
 semantic_search/
 ├── README.md
 ├── config.yaml
+├── install.bat              # double-click to install with CUDA PyTorch
 ├── launch.bat               # double-click to start server and open browser
 ├── semantic_search/
 │   ├── __init__.py          # load_config(), path normalisation
@@ -65,18 +66,28 @@ semantic_search/
 
 ## Installation
 
-**Requirements:** Python 3.10+, pip.
+**Requirements:** Python 3.10+, pip, CUDA 12.1-compatible GPU (recommended).
 
 ```bash
 git clone https://github.com/yourname/semantic_search.git
 cd semantic_search
-pip install -e .
 ```
 
-For GPU support, install the CUDA-enabled PyTorch build first (before the other requirements), matching your CUDA version:
+**Windows:** double-click `install.bat`. This creates a virtual environment in `.\venv\`, installs PyTorch with CUDA 12.1 support, then installs the remaining dependencies. `launch.bat` activates the venv automatically.
+
+**Other platforms / manual install:**
 
 ```bash
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+python -m venv venv
+source venv/bin/activate
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+pip install -e ".[server]"
+```
+
+CUDA is the default and strongly recommended — indexing on CPU is significantly slower. If you want the CPU-only build instead, replace the torch install line with:
+
+```bash
+pip install torch torchvision
 ```
 
 The SigLIP 2 model weights (~400 MB) are downloaded from Hugging Face on first run and cached in `~/.cache/huggingface/`.

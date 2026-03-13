@@ -21,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 watch = ["watchdog>=3.0"]
+exr = ["openexr>=3.0"]
 server = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
