@@ -15,5 +15,6 @@ pip install -e ".[server]"
 
 echo.
 echo Installation complete. The virtual environment is in .\venv\
-echo launch.bat will activate it automatically.
+echo Before launching, edit config.yaml to set your watched_folders path.
+echo Then double-click launch.bat to start.
 pause
