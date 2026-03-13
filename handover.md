@@ -10,6 +10,8 @@ UI. No cloud services — everything runs on the user's machine.
 
 ```
 config.yaml                   ← user configuration (watched folders, db path, model)
+install.bat                   ← creates venv, installs CUDA PyTorch + dependencies
+launch.bat                    ← activates venv, starts server, opens browser
 semantic_search/
   __init__.py                 ← load_config(), normalises paths and extensions
   models.py                   ← ModelManager: loads SigLIP 2, encode_image/encode_text
@@ -18,9 +20,8 @@ semantic_search/
   search.py                   ← search(): text query → ranked results
   cli.py                      ← `semantic-search index/search/status` CLI commands
 server/
-  app.py                      ← FastAPI server (search, thumb, similar, reindex)
-  templates/index.html        ← Single-page dark UI (search, lightbox, find-similar)
-launch.bat                    ← Double-click to start server + open browser
+  app.py                      ← FastAPI server (search, count, thumb, raw, similar, reindex)
+  templates/index.html        ← Single-page dark UI (search, lightbox, find-similar, GIF support)
 ```
 
 ## Key design decisions
@@ -34,6 +35,11 @@ launch.bat                    ← Double-click to start server + open browser
 - **`_read_columns()` in store.py** uses `to_arrow().select(columns)` — NOT the
   lance scanner API (`to_lance().scanner()`), which is broken in the installed lance
   version (`module 'lance' has no attribute 'dataset'`).
+- **Model cache** — `models.py` tries `local_files_only=True` first to avoid HuggingFace
+  HTTP freshness checks on every startup. Falls back to downloading on first run.
+- **venv** — `install.bat` creates `.\venv\` and `launch.bat` activates it. CUDA 12.1
+  PyTorch is installed first (before `pip install -e .`) to avoid pip overwriting it
+  with the CPU build.
 
 ## Known gotchas / bugs fixed
 
@@ -42,7 +48,7 @@ launch.bat                    ← Double-click to start server + open browser
 When these are embedded in HTML `onclick="..."` attributes, `\r` in `\references`
 is interpreted by the JS parser as a carriage return, mangling the string.
 
-**Fix applied:** `escAttr()` in `index.html` now escapes backslashes first:
+**Fix applied:** `escAttr()` in `index.html` escapes backslashes first:
 ```js
 function escAttr(s) {
   return s.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
@@ -58,29 +64,49 @@ It must convert to posix before looking up in LanceDB.
 `app.py` normalises the query path to posix before filtering out the query image
 from results (since `store.search()` returns posix paths).
 
-## Current state
+### 4. Reindex job state leak
+`_run_reindex()` in `app.py` uses a `finally` block to guarantee `_job.finish()`
+is always called, even if an unexpected exception fires before the result is set.
+Without this, the reindex button would lock up permanently.
 
-- Text search: working ✓
-- Incremental reindex (button in UI): working ✓ — skips unchanged files by hash
-- Find similar (hover card → "find similar" button): recently fixed, should work
-  after server restart with latest code
-- Lightbox (click image): working ✓
-- Copy path (hover card → "copy path"): working ✓
+### 5. Thumbnail cache
+`/thumb` and `/raw` endpoints use `Cache-Control: no-cache` (not `max-age=86400`)
+so that reindexed or replaced files are always fetched fresh from disk.
+
+## Current state (as of 2026-03-13)
+
+All core features working:
+
+- Text search ✓
+- Find similar (visual embedding search) ✓
+- Lightbox with copy path + find similar buttons ✓
+- Arrow key navigation in lightbox (left/right) ✓
+- Incremental reindex via UI button ✓ — auto-refreshes results on completion
+- Reindex status shows: new / unchanged / failed / removed counts ✓
+- GIF support ✓ — static thumbnail in grid, animates on hover, animated in lightbox
+- GIF badge overlay on cards ✓
+- Duplicate filtering by file hash (search + find similar) ✓
+- Index count displayed in header, updated after reindex ✓
+- Stale entry cleanup (deleted files pruned on reindex) ✓
+- venv-based install via install.bat ✓
 
 ## Environment
 
-- Windows 10, Python (no venv — installed to system Python)
-- PyTorch installed for CUDA (`cu118`): `pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118`
-- Package installed editable: `pip install -e .`
-- `config.yaml` at repo root — user has set `watched_folders: [D:/references]`
+- Windows 10, Python 3.10+
+- Virtual environment at `.\venv\` (created by `install.bat`)
+- PyTorch with CUDA 12.1: installed via `install.bat` from `download.pytorch.org/whl/cu121`
+- Package installed editable: `pip install -e ".[server]"`
+- `config.yaml` at repo root — user sets `watched_folders`
 - DB at `~/.semantic_search/db` (LanceDB directory)
 
 ## Running the server
 
+Double-click `launch.bat` (activates venv, starts server, opens browser), or manually:
 ```
+venv\Scripts\activate
 python server/app.py
 ```
-Or double-click `launch.bat`. Server starts at http://localhost:8000 and auto-opens browser.
+Server starts at http://localhost:8000.
 
 ## Running the CLI indexer
 
@@ -90,21 +116,11 @@ semantic-search status       # show count and last-indexed time (no model load)
 semantic-search search "query"
 ```
 
-## Git history (recent)
+## Pending / worth revisiting
 
-- `36a5ef2` Fix incremental reindex: replace broken lance scanner with to_arrow()
-- `a2baaa6` re-index functionality
-- `07aba86` local instance interface
-- `c0968ed` fixed tensor model, updated watched folders
-
-## Pending / to-do
-
-- The "find similar" feature is new and was just debugged. Verify it works end-to-end
-  after the latest server restart.
-- Consider whether `search.py` should stop converting to OS-native paths. Returning
-  posix paths everywhere would eliminate the backslash JS-escaping problem entirely
-  and make `/search` and `/similar` consistent. Trade-off: copy-path in the UI would
-  give forward-slash paths to the user (fine for most uses on Windows).
-- `get_embedding()` loads the entire table into memory to filter by path. For large
-  libraries (10k+ images) this will be slow. A proper indexed lookup or LanceDB
-  filter query would be more efficient.
+- `get_embedding()` loads the entire table into memory to filter by path. For very
+  large libraries (50k+ images) this could be slow. A proper LanceDB filter query
+  would be more efficient, but the current arrow-based approach is reliable.
+- `search.py` converting posix → OS-native paths means the web UI shows Windows
+  backslash paths in copy-path. Returning posix everywhere would simplify the JS
+  escaping but would change the format users see.

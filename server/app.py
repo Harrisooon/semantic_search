@@ -109,6 +109,11 @@ async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 
+@app.get("/count")
+async def count():
+    return {"count": store.count()}
+
+
 @app.get("/search")
 async def search_endpoint(
     q: str = Query(min_length=1, max_length=500),

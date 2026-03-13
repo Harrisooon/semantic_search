@@ -357,6 +357,7 @@
         autocomplete="off" spellcheck="false" autofocus />
     </div>
     <span id="count"></span>
+    <span id="index-count" style="font-size:11px;color:var(--muted);white-space:nowrap;"></span>
     <button id="reindex-btn" title="Scan watched folders for new or changed images">
       <div class="ri-spinner"></div>
       <span id="reindex-label">reindex</span>
@@ -406,11 +407,14 @@
     let currentResults       = [];
     let currentLightboxIndex = -1;
 
-    // ── Fetch index count on load ──
-    fetch('/search?q=a&top=1')
-      .then(r => r.json())
-      .then(() => {})
-      .catch(() => {});
+    // ── Index count ──
+    const indexCountEl = document.getElementById('index-count');
+    function refreshIndexCount() {
+      fetch('/count').then(r => r.json()).then(d => {
+        indexCountEl.textContent = d.count.toLocaleString() + ' images indexed';
+      }).catch(() => {});
+    }
+    refreshIndexCount();
 
     // ── Search input ──
     searchInput.addEventListener('input', () => {
@@ -654,6 +658,7 @@
                 setStatus(`Reindex failed: ${r.error}`);
               } else {
                 setStatus(`Reindex done — ${r.indexed} new, ${r.skipped} unchanged, ${r.failed} failed, ${r.stale_removed} removed`);
+                refreshIndexCount();
                 if (currentQuery) runSearch(currentQuery);
               }
             }

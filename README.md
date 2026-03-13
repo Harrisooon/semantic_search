@@ -22,7 +22,8 @@ Everything runs on your local machine. Nothing is sent to an external server.
 - **Duplicate filtering** — search and find-similar results deduplicate by file hash, so identical files stored in multiple folders appear only once
 - **Fast re-indexing** — blake2b file hashing skips unchanged files on subsequent runs; deleted files are pruned automatically
 - **File-based vector store** — LanceDB stores everything in a directory; no database daemon required
-- **Web UI** — single-page grid interface with lightbox, copy path, and in-browser reindex trigger
+- **Web UI** — single-page grid interface with lightbox, copy path, find similar, arrow key navigation, and in-browser reindex trigger
+- **Index count** — live image count displayed in the header, updated after every reindex
 - **CLI** — scriptable `index`, `search`, and `status` commands
 - **GPU-accelerated** — runs on CUDA if available, falls back to CPU automatically
 - **CG format support** — PNG, JPG, GIF, TGA, BMP, TIFF, WebP, and EXR (via OpenEXR)
@@ -59,7 +60,7 @@ semantic_search/
 | `indexer.py` | Walks configured folders, computes blake2b hashes per file, diffs against stored hashes, batches new/changed images, calls `encode_image()`, writes to the store. Removes records for deleted files. |
 | `store.py` | Thin wrapper around LanceDB. Handles table creation, upsert by file path, similarity search with optional hash-based deduplication, and deletion of stale records. |
 | `search.py` | Takes a raw text query, calls `encode_text()`, delegates to `store.search()`, and returns ranked results with file paths and similarity scores. |
-| `server/app.py` | FastAPI app. `GET /search?q=` returns JSON results; `GET /thumb?path=&size=` returns a resized JPEG; `GET /raw?path=` serves the original file (used for animated GIFs); `GET /similar?path=` returns visually similar images by embedding lookup; `POST /reindex` triggers an incremental background reindex. |
+| `server/app.py` | FastAPI app. `GET /search?q=` returns JSON results; `GET /count` returns the total indexed image count; `GET /thumb?path=&size=` returns a resized JPEG; `GET /raw?path=` serves the original file (used for animated GIFs); `GET /similar?path=` returns visually similar images by embedding lookup; `POST /reindex` triggers an incremental background reindex. |
 | `server/templates/index.html` | Vanilla JS single-page UI. Search bar, responsive image grid, lightbox with copy path and find similar, GIF badge and hover animation. |
 
 ---
@@ -163,7 +164,7 @@ Then open `http://localhost:8000` in your browser. The server loads the model on
 
 **Search:** type a natural language query in the search bar. Results appear as a responsive image grid sorted by similarity score.
 
-**Lightbox:** click any image to open a full-size view with copy path and find similar buttons.
+**Lightbox:** click any image to open a full-size view with copy path and find similar buttons. Use the left/right arrow keys to navigate between results.
 
 **Find similar:** hover a card and click "find similar", or use the button in the lightbox, to search by visual embedding rather than text.
 
