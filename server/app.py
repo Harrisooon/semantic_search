@@ -10,6 +10,8 @@ Endpoints:
 
 from __future__ import annotations
 
+print("Starting up...")
+
 import io
 import logging
 import threading
@@ -38,7 +40,9 @@ _HERE = Path(__file__).parent
 _CONFIG_PATH = _HERE.parent / "config.yaml"
 
 cfg = load_config(_CONFIG_PATH)
+print("Loading model...")
 model = ModelManager(cfg["model_variant"], cfg["device"])
+print("Opening index...")
 store = ImageStore(cfg["db_path"], embedding_dim=model.embedding_dim)
 
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ import logging
 
 import numpy as np
 import torch
+from huggingface_hub import snapshot_download
 from huggingface_hub.utils import LocalEntryNotFoundError
 from PIL import Image
 from transformers import AutoModel, AutoProcessor
@@ -42,20 +43,13 @@ class ModelManager:
         logger.info("Loading %s on %s ...", model_variant, self._device)
 
         try:
-            self._processor = AutoProcessor.from_pretrained(model_variant, local_files_only=True)
-            self._model = (
-                AutoModel.from_pretrained(model_variant, local_files_only=True)
-                .to(self._device)
-                .eval()
-            )
+            local_path = snapshot_download(model_variant, local_files_only=True)
         except (LocalEntryNotFoundError, OSError):
             logger.info("Model not cached — downloading from Hugging Face...")
-            self._processor = AutoProcessor.from_pretrained(model_variant)
-            self._model = (
-                AutoModel.from_pretrained(model_variant)
-                .to(self._device)
-                .eval()
-            )
+            local_path = snapshot_download(model_variant)
+
+        self._processor = AutoProcessor.from_pretrained(local_path)
+        self._model = AutoModel.from_pretrained(local_path).to(self._device).eval()
 
         # Detect output dimension with a single dummy forward pass.
         self.embedding_dim: int = self._detect_dim()
