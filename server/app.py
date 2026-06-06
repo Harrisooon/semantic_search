@@ -118,15 +118,21 @@ async def count():
     return {"count": store.count()}
 
 
+@app.get("/folders")
+async def folders_endpoint():
+    return {"folders": store.get_all_folders()}
+
+
 @app.get("/search")
 async def search_endpoint(
     q: str = Query(min_length=1, max_length=500),
     top: int = Query(default=40, ge=1, le=200),
+    folder: list[str] = Query(default=[]),
 ):
     if store.count() == 0:
         return {"results": [], "error": "Index is empty. Run `semantic-search index` first."}
 
-    results = _search(q, store, model, top_k=top)
+    results = _search(q, store, model, top_k=top, folder_filter=folder or None)
     return {
         "results": [
             {"path": path, "filename": Path(path).name, "score": score}
@@ -211,6 +217,7 @@ async def raw(path: str):
 async def similar_endpoint(
     path: str,
     top: int = Query(default=40, ge=1, le=200),
+    folder: list[str] = Query(default=[]),
 ):
     if store.count() == 0:
         return {"results": [], "error": "Index is empty."}
@@ -220,7 +227,7 @@ async def similar_endpoint(
         raise HTTPException(status_code=404, detail="Image not in index")
 
     posix_path = Path(path).as_posix()
-    results = store.search(embedding, top_k=top + 1)
+    results = store.search(embedding, top_k=top + 1, folder_filter=folder or None)
     # Exclude the query image itself (it will be the top hit with score ~1.0).
     # store.search returns posix paths; compare against normalised posix_path.
     results = [(p, s) for p, s in results if p != posix_path][:top]

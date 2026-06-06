@@ -16,14 +16,17 @@ def search(
     store: ImageStore,
     model: ModelManager,
     top_k: int = 20,
+    folder_filter: list[str] | None = None,
 ) -> list[tuple[str, float]]:
     """Search the index with a natural language query.
 
     Args:
-        query:  Natural language search string, e.g. "moody forest lighting".
-        store:  Initialised ImageStore pointing at the LanceDB directory.
-        model:  Loaded ModelManager (shared with indexer to avoid reloading).
-        top_k:  Maximum number of results to return.
+        query:         Natural language search string, e.g. "moody forest lighting".
+        store:         Initialised ImageStore pointing at the LanceDB directory.
+        model:         Loaded ModelManager (shared with indexer to avoid reloading).
+        top_k:         Maximum number of results to return.
+        folder_filter: Optional list of POSIX folder paths; restricts results to
+                       images under any of those folders.
 
     Returns:
         List of (path, score) tuples, sorted by descending cosine similarity.
@@ -33,7 +36,7 @@ def search(
         return []
 
     vector = model.encode_text([query])[0]
-    results = store.search(vector, top_k=top_k)
+    results = store.search(vector, top_k=top_k, folder_filter=folder_filter)
 
     # Convert stored posix paths back to OS-native paths.
     results = [(str(Path(p)), score) for p, score in results]

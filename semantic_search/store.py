@@ -111,6 +111,18 @@ class ImageStore:
             logger.warning("Could not read paths from store: %s", e)
             return set()
 
+    def get_all_folders(self) -> list[str]:
+        """Return sorted unique parent folders (as POSIX paths) of all indexed images."""
+        if self.count() == 0:
+            return []
+        try:
+            data = self._read_columns(["path"])
+            folders = sorted(set(Path(p).parent.as_posix() for p in data["path"]))
+            return folders
+        except Exception as e:
+            logger.warning("Could not read folders from store: %s", e)
+            return []
+
     # ------------------------------------------------------------------
     # Write operations
     # ------------------------------------------------------------------
@@ -175,27 +187,36 @@ class ImageStore:
         vector: np.ndarray,
         top_k: int = 20,
         deduplicate: bool = True,
+        folder_filter: list[str] | None = None,
     ) -> list[tuple[str, float]]:
         """Approximate nearest-neighbour search by cosine similarity.
 
         Args:
-            vector:      L2-normalised float32 array of shape (D,).
-            top_k:       number of results to return.
-            deduplicate: if True (default), only the highest-scoring image is
-                         kept when multiple paths share the same file_hash.
+            vector:        L2-normalised float32 array of shape (D,).
+            top_k:         number of results to return.
+            deduplicate:   if True (default), only the highest-scoring image is
+                           kept when multiple paths share the same file_hash.
+            folder_filter: List of POSIX folder paths; results are restricted to
+                           images under any of those folders.
 
         Returns:
             List of (path, score) sorted by descending score.
             Score is cosine similarity in [−1, 1]; 1.0 = identical.
         """
-        # Fetch extra results so deduplication still yields top_k after filtering.
+        # Fetch extra results so deduplication + folder post-filter still yield top_k.
         fetch_k = top_k * 4 if deduplicate else top_k
+        if folder_filter:
+            fetch_k = fetch_k * 5  # inflate further to survive the folder filter
         results = (
             self.table.search(vector.tolist(), vector_column_name="embedding")
             .metric("cosine")
             .limit(fetch_k)
             .to_list()
         )
+
+        if folder_filter:
+            prefixes = tuple(Path(f).as_posix().rstrip('/') + '/' for f in folder_filter)
+            results = [r for r in results if any(r["path"].startswith(p) for p in prefixes)]
 
         if deduplicate:
             seen_hashes: set[str] = set()

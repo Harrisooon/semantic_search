@@ -271,6 +271,67 @@
     }
     #similar-clear:hover { border-color: var(--border-hover); color: var(--text); }
 
+    /* ── Folder filter bar ── */
+    #filter-bar {
+      display: none;
+      padding: 7px 24px;
+      border-bottom: 1px solid var(--border);
+      align-items: flex-start;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    #filter-bar.visible { display: flex; }
+
+    .filter-label {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      white-space: nowrap;
+      user-select: none;
+      line-height: 22px;
+    }
+
+    #folder-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      flex: 1;
+    }
+
+    .folder-pill {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      color: var(--muted);
+      font-size: 11px;
+      padding: 2px 10px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: border-color 0.12s, color 0.12s, background 0.12s;
+      user-select: none;
+      line-height: 18px;
+    }
+    .folder-pill:hover { border-color: var(--border-hover); color: var(--text); }
+    .folder-pill.active {
+      background: var(--border);
+      border-color: var(--border-hover);
+      color: var(--accent);
+    }
+
+    #filter-clear {
+      background: none;
+      border: none;
+      color: var(--dim);
+      font-size: 11px;
+      cursor: pointer;
+      padding: 2px 4px;
+      line-height: 22px;
+      white-space: nowrap;
+      display: none;
+    }
+    #filter-clear:hover { color: var(--muted); }
+
     /* ── Empty / error states ── */
     .placeholder {
       grid-column: 1 / -1;
@@ -370,6 +431,12 @@
     <button id="similar-clear" onclick="clearSimilar()">✕ clear</button>
   </div>
 
+  <div id="filter-bar">
+    <span class="filter-label">folder</span>
+    <div id="folder-pills"></div>
+    <button id="filter-clear" onclick="clearFolderFilter()">✕ clear</button>
+  </div>
+
   <div id="statusbar">
     <div class="spinner" id="spinner"></div>
     <span id="status-text">Type a query to search your library.</span>
@@ -406,6 +473,7 @@
     let currentQuery         = '';
     let currentResults       = [];
     let currentLightboxIndex = -1;
+    let currentSimilarPath   = null;
 
     // ── Index count ──
     const indexCountEl = document.getElementById('index-count');
@@ -415,6 +483,67 @@
       }).catch(() => {});
     }
     refreshIndexCount();
+
+    // ── Folder filter ──
+    const filterBar  = document.getElementById('filter-bar');
+    const filterClearBtn = document.getElementById('filter-clear');
+    const selectedFolders = new Set();
+
+    function formatFolderLabel(posixPath) {
+      const parts = posixPath.split('/').filter(p => p && !p.endsWith(':'));
+      return parts.length > 2 ? '…/' + parts.slice(-2).join('/') : posixPath;
+    }
+
+    function buildFolderParams() {
+      return [...selectedFolders].map(f => `folder=${encodeURIComponent(f)}`).join('&');
+    }
+
+    function triggerFilteredSearch() {
+      if (similarBanner.classList.contains('active') && currentSimilarPath) {
+        runSimilar({ stopPropagation: () => {} }, currentSimilarPath);
+      } else if (currentQuery) {
+        runSearch(currentQuery);
+      }
+    }
+
+    function clearFolderFilter() {
+      selectedFolders.clear();
+      document.querySelectorAll('.folder-pill.active').forEach(p => p.classList.remove('active'));
+      filterClearBtn.style.display = 'none';
+      triggerFilteredSearch();
+    }
+
+    async function loadFolders() {
+      try {
+        const res  = await fetch('/folders');
+        const data = await res.json();
+        const folders = data.folders || [];
+        if (folders.length >= 2) {
+          filterBar.classList.add('visible');
+          const pillsContainer = document.getElementById('folder-pills');
+          folders.forEach(f => {
+            const pill = document.createElement('button');
+            pill.className = 'folder-pill';
+            pill.textContent = formatFolderLabel(f);
+            pill.title = f;
+            pill.dataset.folder = f;
+            pill.addEventListener('click', () => {
+              if (selectedFolders.has(f)) {
+                selectedFolders.delete(f);
+                pill.classList.remove('active');
+              } else {
+                selectedFolders.add(f);
+                pill.classList.add('active');
+              }
+              filterClearBtn.style.display = selectedFolders.size > 0 ? '' : 'none';
+              triggerFilteredSearch();
+            });
+            pillsContainer.appendChild(pill);
+          });
+        }
+      } catch {}
+    }
+    loadFolders();
 
     // ── Search input ──
     searchInput.addEventListener('input', () => {
@@ -443,7 +572,8 @@
     async function runSearch(q) {
       currentQuery = q;
       try {
-        const res  = await fetch(`/search?q=${encodeURIComponent(q)}&top=60`);
+        const fp  = buildFolderParams();
+        const res = await fetch(`/search?q=${encodeURIComponent(q)}&top=60${fp ? '&' + fp : ''}`);
         const data = await res.json();
 
         if (q !== currentQuery) return; // stale
@@ -579,6 +709,7 @@
 
     async function runSimilar(e, path) {
       e.stopPropagation();
+      currentSimilarPath = path;
       setStatus('', true);
       currentQuery = '';
       searchInput.value = '';
@@ -589,7 +720,8 @@
       similarBanner.classList.add('active');
 
       try {
-        const res  = await fetch(`/similar?path=${encodeURIComponent(path)}&top=60`);
+        const fp  = buildFolderParams();
+        const res = await fetch(`/similar?path=${encodeURIComponent(path)}&top=60${fp ? '&' + fp : ''}`);
         const data = await res.json();
         if (!res.ok || data.error) {
           const msg = data.detail || data.error || 'Unknown error';
@@ -609,6 +741,7 @@
     function clearSimilar() {
       similarBanner.classList.remove('active');
       similarThumb.src = '';
+      currentSimilarPath = null;
       grid.innerHTML = '<div class="placeholder"><strong>Your reference library, searchable.</strong>Type any descriptive phrase in the search bar above.</div>';
       setStatus('Type a query to search your library.');
       countEl.textContent = '';
