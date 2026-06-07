@@ -143,6 +143,8 @@
       padding: 4px 24px 32px;
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      align-items: start;
+      align-content: start;
       gap: 10px;
       flex: 1;
     }
@@ -271,16 +273,21 @@
     }
     #similar-clear:hover { border-color: var(--border-hover); color: var(--text); }
 
-    /* ── Folder filter bar ── */
+    /* ── Filter bar (folder + colour) ── */
     #filter-bar {
       display: none;
-      padding: 7px 24px;
+      padding: 8px 24px;
       border-bottom: 1px solid var(--border);
-      align-items: flex-start;
-      gap: 10px;
-      flex-wrap: wrap;
+      flex-direction: column;
+      gap: 7px;
     }
     #filter-bar.visible { display: flex; }
+
+    .filter-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
 
     .filter-label {
       font-size: 11px;
@@ -289,7 +296,7 @@
       letter-spacing: 0.06em;
       white-space: nowrap;
       user-select: none;
-      line-height: 22px;
+      min-width: 44px;
     }
 
     #folder-pills {
@@ -319,6 +326,66 @@
       color: var(--accent);
     }
 
+    #topk-slider {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 160px;
+      height: 3px;
+      background: var(--border);
+      border-radius: 2px;
+      outline: none;
+      cursor: pointer;
+    }
+    #topk-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      background: var(--dim);
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+    #topk-slider::-webkit-slider-thumb:hover { background: var(--muted); }
+    #topk-slider::-moz-range-thumb {
+      width: 13px;
+      height: 13px;
+      border: none;
+      border-radius: 50%;
+      background: var(--dim);
+      cursor: pointer;
+    }
+    #topk-value {
+      font-size: 11px;
+      color: var(--muted);
+      min-width: 26px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    #color-swatches {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex: 1;
+    }
+
+    .color-swatch {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      border: 2px solid transparent;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: transform 0.1s, border-color 0.1s;
+      outline: none;
+      padding: 0;
+    }
+    .color-swatch:hover { transform: scale(1.25); }
+    .color-swatch.active {
+      border-color: rgba(255,255,255,0.85);
+      transform: scale(1.2);
+    }
+
     #filter-clear {
       background: none;
       border: none;
@@ -326,9 +393,9 @@
       font-size: 11px;
       cursor: pointer;
       padding: 2px 4px;
-      line-height: 22px;
       white-space: nowrap;
       display: none;
+      margin-left: auto;
     }
     #filter-clear:hover { color: var(--muted); }
 
@@ -417,7 +484,6 @@
         placeholder='Try "moody forest lighting" or "hard surface sci-fi panel" …'
         autocomplete="off" spellcheck="false" autofocus />
     </div>
-    <span id="count"></span>
     <span id="index-count" style="font-size:11px;color:var(--muted);white-space:nowrap;"></span>
     <button id="reindex-btn" title="Scan watched folders for new or changed images">
       <div class="ri-spinner"></div>
@@ -432,9 +498,20 @@
   </div>
 
   <div id="filter-bar">
-    <span class="filter-label">folder</span>
-    <div id="folder-pills"></div>
-    <button id="filter-clear" onclick="clearFolderFilter()">✕ clear</button>
+    <div class="filter-row" id="folder-row" style="display:none">
+      <span class="filter-label">folder</span>
+      <div id="folder-pills"></div>
+    </div>
+    <div class="filter-row">
+      <span class="filter-label">color</span>
+      <div id="color-swatches"></div>
+      <button id="filter-clear" onclick="clearAllFilters()">&#x2715; clear</button>
+    </div>
+    <div class="filter-row">
+      <span class="filter-label">results</span>
+      <input id="topk-slider" type="range" min="10" max="200" step="5" value="60" />
+      <span id="topk-value">60</span>
+    </div>
   </div>
 
   <div id="statusbar">
@@ -464,8 +541,7 @@
     const grid        = document.getElementById('grid');
     const statusText  = document.getElementById('status-text');
     const spinner     = document.getElementById('spinner');
-    const countEl     = document.getElementById('count');
-    const lightbox    = document.getElementById('lightbox');
+const lightbox    = document.getElementById('lightbox');
     const lbImg       = document.getElementById('lightbox-img');
     const lbPath      = document.getElementById('lightbox-path');
 
@@ -479,39 +555,106 @@
     const indexCountEl = document.getElementById('index-count');
     function refreshIndexCount() {
       fetch('/count').then(r => r.json()).then(d => {
+        if (d.count > 0) filterBar.classList.add('visible');
         indexCountEl.textContent = d.count.toLocaleString() + ' images indexed';
       }).catch(() => {});
     }
     refreshIndexCount();
 
-    // ── Folder filter ──
-    const filterBar  = document.getElementById('filter-bar');
+    // ── Filters (folder + colour) ──
+    const filterBar      = document.getElementById('filter-bar');
     const filterClearBtn = document.getElementById('filter-clear');
     const selectedFolders = new Set();
+    const selectedColors  = new Set();
+    let currentTopK = 60;
+
+    const COLOR_SWATCHES = [
+      { name: 'black',  hex: '#1c1c1c' },
+      { name: 'white',  hex: '#e0e0e0' },
+      { name: 'gray',   hex: '#7c7c7c' },
+      { name: 'red',    hex: '#dc2626' },
+      { name: 'orange', hex: '#ea580c' },
+      { name: 'yellow', hex: '#ca8a04' },
+      { name: 'green',  hex: '#16a34a' },
+      { name: 'teal',   hex: '#0d9488' },
+      { name: 'blue',   hex: '#2563eb' },
+      { name: 'purple', hex: '#9333ea' },
+      { name: 'pink',   hex: '#db2777' },
+      { name: 'brown',  hex: '#92400e' },
+    ];
 
     function formatFolderLabel(posixPath) {
       const parts = posixPath.split('/').filter(p => p && !p.endsWith(':'));
       return parts.length > 2 ? '…/' + parts.slice(-2).join('/') : posixPath;
     }
 
-    function buildFolderParams() {
-      return [...selectedFolders].map(f => `folder=${encodeURIComponent(f)}`).join('&');
+    function buildFilterParams() {
+      const fp = [...selectedFolders].map(f => `folder=${encodeURIComponent(f)}`);
+      const cp = [...selectedColors].map(c => `color=${encodeURIComponent(c)}`);
+      return [...fp, ...cp].join('&');
+    }
+
+    function updateFilterClear() {
+      filterClearBtn.style.display = (selectedFolders.size + selectedColors.size > 0) ? '' : 'none';
     }
 
     function triggerFilteredSearch() {
+      const hasFilters = selectedFolders.size > 0 || selectedColors.size > 0;
       if (similarBanner.classList.contains('active') && currentSimilarPath) {
         runSimilar({ stopPropagation: () => {} }, currentSimilarPath);
       } else if (currentQuery) {
         runSearch(currentQuery);
+      } else if (hasFilters) {
+        runBrowse();
+      } else {
+        grid.innerHTML = '<div class="placeholder"><strong>Your reference library, searchable.</strong>Type any descriptive phrase in the search bar above.</div>';
+        setStatus('Type a query to search your library.');
       }
     }
 
-    function clearFolderFilter() {
+    function clearAllFilters() {
       selectedFolders.clear();
-      document.querySelectorAll('.folder-pill.active').forEach(p => p.classList.remove('active'));
+      selectedColors.clear();
+      document.querySelectorAll('.folder-pill.active, .color-swatch.active')
+        .forEach(el => el.classList.remove('active'));
       filterClearBtn.style.display = 'none';
       triggerFilteredSearch();
     }
+
+    // Build colour swatches immediately
+    (function() {
+      const container = document.getElementById('color-swatches');
+      COLOR_SWATCHES.forEach(({ name, hex }) => {
+        const btn = document.createElement('button');
+        btn.className = 'color-swatch';
+        btn.style.background = hex;
+        btn.title = name;
+        btn.dataset.color = name;
+        btn.addEventListener('click', () => {
+          if (selectedColors.has(name)) {
+            selectedColors.delete(name);
+            btn.classList.remove('active');
+          } else {
+            selectedColors.add(name);
+            btn.classList.add('active');
+          }
+          updateFilterClear();
+          triggerFilteredSearch();
+        });
+        container.appendChild(btn);
+      });
+    })();
+
+    // Results slider
+    const topkSlider = document.getElementById('topk-slider');
+    const topkValueEl = document.getElementById('topk-value');
+    topkSlider.addEventListener('input', () => {
+      currentTopK = parseInt(topkSlider.value, 10);
+      topkValueEl.textContent = currentTopK;
+    });
+    topkSlider.addEventListener('change', () => {
+      triggerFilteredSearch();
+    });
 
     async function loadFolders() {
       try {
@@ -519,7 +662,8 @@
         const data = await res.json();
         const folders = data.folders || [];
         if (folders.length >= 2) {
-          filterBar.classList.add('visible');
+          const row = document.getElementById('folder-row');
+          row.style.display = 'flex';
           const pillsContainer = document.getElementById('folder-pills');
           folders.forEach(f => {
             const pill = document.createElement('button');
@@ -535,7 +679,7 @@
                 selectedFolders.add(f);
                 pill.classList.add('active');
               }
-              filterClearBtn.style.display = selectedFolders.size > 0 ? '' : 'none';
+              updateFilterClear();
               triggerFilteredSearch();
             });
             pillsContainer.appendChild(pill);
@@ -552,7 +696,6 @@
       if (!q) {
         grid.innerHTML = '<div class="placeholder"><strong>Your reference library, searchable.</strong>Type any descriptive phrase in the search bar above.</div>';
         setStatus('');
-        countEl.textContent = '';
         currentQuery = '';
         return;
       }
@@ -572,8 +715,8 @@
     async function runSearch(q) {
       currentQuery = q;
       try {
-        const fp  = buildFolderParams();
-        const res = await fetch(`/search?q=${encodeURIComponent(q)}&top=60${fp ? '&' + fp : ''}`);
+        const fp  = buildFilterParams();
+        const res = await fetch(`/search?q=${encodeURIComponent(q)}&top=${currentTopK}${fp ? '&' + fp : ''}`);
         const data = await res.json();
 
         if (q !== currentQuery) return; // stale
@@ -590,6 +733,32 @@
       }
     }
 
+    // ── Browse (filter-only, no semantic query) ──
+    async function runBrowse() {
+      setStatus('', true);
+      try {
+        const fp  = buildFilterParams();
+        const res = await fetch(`/browse?top=${currentTopK}${fp ? '&' + fp : ''}`);
+        const data = await res.json();
+        if (data.error) {
+          setStatus(data.error);
+          grid.innerHTML = `<div class="placeholder"><strong>Error</strong>${escHtml(String(data.error))}</div>`;
+          return;
+        }
+        const results = data.results || [];
+        renderResults(results, null);
+        if (results.length === 0) {
+          const hint = selectedColors.size > 0 ? ' — reindex to populate colour data' : '';
+          setStatus(`No results matching filters${hint}`);
+        } else {
+          const noun = results.length === 1 ? 'result' : 'results';
+          setStatus(`${results.length} ${noun} matching filters`);
+        }
+      } catch (err) {
+        setStatus(`Request failed: ${err.message}`);
+      }
+    }
+
     function renderResults(results, q) {
       currentResults = results;
       spinner.classList.remove('active');
@@ -597,17 +766,15 @@
       if (results.length === 0) {
         setStatus(q ? `No results for "${q}"` : 'No similar images found.');
         grid.innerHTML = '<div class="placeholder"><strong>No results found.</strong>Try a different query.</div>';
-        countEl.textContent = '';
         return;
       }
 
       const noun = results.length === 1 ? 'result' : 'results';
       if (q) setStatus(`${results.length} ${noun} for "${q}"`);
-      countEl.textContent = '';
 
       grid.innerHTML = results.map((r, i) => {
         const thumb = imgUrl(r.path, 400);
-        const pct   = (r.score * 100).toFixed(1);
+        const pct   = r.score != null ? (r.score * 100).toFixed(1) + '%' : '';
         return `
           <div class="card" data-path="${escHtml(r.path)}" data-thumb="${escHtml(thumb)}" data-index="${i}">
             <div class="card-thumb-wrap">
@@ -620,7 +787,7 @@
             </div>
             <div class="card-meta">
               <span class="card-name" title="${escHtml(r.path)}">${escHtml(r.filename)}</span>
-              <span class="card-score">${pct}%</span>
+              <span class="card-score">${pct}</span>
             </div>
           </div>`;
       }).join('');
@@ -720,8 +887,8 @@
       similarBanner.classList.add('active');
 
       try {
-        const fp  = buildFolderParams();
-        const res = await fetch(`/similar?path=${encodeURIComponent(path)}&top=60${fp ? '&' + fp : ''}`);
+        const fp  = buildFilterParams();
+        const res = await fetch(`/similar?path=${encodeURIComponent(path)}&top=${currentTopK}${fp ? '&' + fp : ''}`);
         const data = await res.json();
         if (!res.ok || data.error) {
           const msg = data.detail || data.error || 'Unknown error';
@@ -744,7 +911,6 @@
       currentSimilarPath = null;
       grid.innerHTML = '<div class="placeholder"><strong>Your reference library, searchable.</strong>Type any descriptive phrase in the search bar above.</div>';
       setStatus('Type a query to search your library.');
-      countEl.textContent = '';
     }
 
     // Typing in search bar clears similar mode
@@ -782,6 +948,10 @@
           const res  = await fetch('/reindex/status');
           const data = await res.json();
           if (data.running) {
+            if (data.total > 0) {
+              const pct = Math.round((data.progress / data.total) * 100);
+              reindexLabel.textContent = `indexing… ${pct}%`;
+            }
             pollReindexStatus(); // keep polling
           } else {
             setReindexRunning(false);
@@ -793,6 +963,7 @@
                 setStatus(`Reindex done — ${r.indexed} new, ${r.skipped} unchanged, ${r.failed} failed, ${r.stale_removed} removed`);
                 refreshIndexCount();
                 if (currentQuery) runSearch(currentQuery);
+                else if (selectedFolders.size > 0 || selectedColors.size > 0) runBrowse();
               }
             }
           }

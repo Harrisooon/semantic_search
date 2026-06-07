@@ -5,9 +5,11 @@ Walk → hash → diff against store → batch-embed new/changed files → upser
 
 from __future__ import annotations
 
+import colorsys
 import hashlib
 import logging
 import time
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -71,6 +73,51 @@ def load_image(path: Path) -> Image.Image | None:
 
 
 # ---------------------------------------------------------------------------
+# Dominant colour extraction
+# ---------------------------------------------------------------------------
+
+
+def _dominant_color(img: Image.Image) -> str:
+    """Return the dominant colour bucket for an image."""
+    try:
+        small = img.resize((64, 64), Image.BILINEAR).convert("RGB")
+        q = small.quantize(colors=8)
+        palette = q.getpalette()
+        counts = Counter(q.getdata())
+        idx = max(counts, key=counts.get)
+        r, g, b = palette[idx * 3], palette[idx * 3 + 1], palette[idx * 3 + 2]
+    except Exception:
+        arr = np.array(img.convert("RGB").resize((64, 64), Image.BILINEAR))
+        r, g, b = int(arr[:, :, 0].mean()), int(arr[:, :, 1].mean()), int(arr[:, :, 2].mean())
+
+    h, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
+
+    if v < 0.20:
+        return "black"
+    if v > 0.85 and s < 0.15:
+        return "white"
+    if s < 0.15:
+        return "gray"
+
+    h360 = h * 360
+    if h360 < 15 or h360 >= 345:
+        return "red"
+    if h360 < 45:
+        return "brown" if v < 0.55 else "orange"
+    if h360 < 75:
+        return "yellow"
+    if h360 < 150:
+        return "green"
+    if h360 < 195:
+        return "teal"
+    if h360 < 255:
+        return "blue"
+    if h360 < 285:
+        return "purple"
+    return "pink"
+
+
+# ---------------------------------------------------------------------------
 # Hashing
 # ---------------------------------------------------------------------------
 
@@ -108,6 +155,7 @@ def index_folders(
     model: ModelManager,
     supported_extensions: set[str],
     batch_size: int = 32,
+    progress_callback=None,
 ) -> dict:
     """Index all given folders into the store.
 
@@ -118,6 +166,9 @@ def index_folders(
     stale_removed.
     """
     folders = [Path(f) for f in folders]
+
+    # Ensure the color column exists before we write records that carry color data.
+    store.ensure_color_column()
 
     # 1. Collect all candidate files across all folders.
     all_files: list[Path] = []
@@ -144,6 +195,7 @@ def index_folders(
 
     # 2. Load stored hashes and determine what needs re-indexing.
     stored_hashes = store.get_all_hashes()
+    missing_color = store.get_paths_missing_color()
     valid_paths: set[str] = set()
     to_index: list[tuple[Path, str]] = []
 
@@ -155,7 +207,7 @@ def index_folders(
         except OSError as e:
             logger.warning("Cannot hash %s: %s", f, e)
             continue
-        if stored_hashes.get(norm_path) != current_hash:
+        if stored_hashes.get(norm_path) != current_hash or norm_path in missing_color:
             to_index.append((f, current_hash))
 
     skipped = len(all_files) - len(to_index)
@@ -207,7 +259,7 @@ def index_folders(
         # Build records and upsert into the store.
         now = time.time()
         records = []
-        for (file_path, file_hash, _), embedding in zip(loaded, embeddings):
+        for (file_path, file_hash, img), embedding in zip(loaded, embeddings):
             records.append(
                 {
                     "path": file_path.as_posix(),
@@ -217,11 +269,14 @@ def index_folders(
                     "mtime": file_path.stat().st_mtime,
                     "indexed_at": now,
                     "embedding": embedding.tolist(),
+                    "color": _dominant_color(img),
                 }
             )
 
         store.upsert(records)
         processed += len(records)
+        if progress_callback:
+            progress_callback(processed, len(to_index))
 
     return {
         "total": len(all_files),

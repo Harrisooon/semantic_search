@@ -46,6 +46,7 @@ class ImageStore:
                 pa.field("ext", pa.utf8()),
                 pa.field("mtime", pa.float64()),
                 pa.field("indexed_at", pa.float64()),
+                pa.field("color", pa.utf8()),
                 pa.field(
                     "embedding",
                     pa.list_(pa.float32(), self.embedding_dim),
@@ -56,12 +57,65 @@ class ImageStore:
     @property
     def table(self):
         if self._table is None:
-            self._table = self._db.create_table(
-                _TABLE_NAME,
-                schema=self._schema(),
-                exist_ok=True,
-            )
+            if _TABLE_NAME in self._db.table_names():
+                # Open the existing table without touching its schema.
+                self._table = self._db.open_table(_TABLE_NAME)
+            else:
+                # First run — create with the current schema (includes color).
+                self._table = self._db.create_table(
+                    _TABLE_NAME,
+                    schema=self._schema(),
+                )
         return self._table
+
+    def ensure_color_column(self) -> None:
+        """Add the 'color' column to tables that predate this field.
+
+        Called at the start of every reindex run so the column exists before
+        new records (which carry color data) are upserted.  Not called on
+        startup to avoid any risk of corrupting an existing table.
+        """
+        try:
+            existing = {f.name for f in self.table.schema}
+            if "color" in existing:
+                return
+
+            # Fast path: add_columns with a SQL expression (lancedb >= 0.8).
+            try:
+                self.table.add_columns({"color": "cast(null as varchar)"})
+                self._table = self._db.open_table(_TABLE_NAME)
+                if "color" in {f.name for f in self._table.schema}:
+                    logger.info("Schema migration: added 'color' column via add_columns")
+                    return
+            except Exception as fast_err:
+                logger.debug("add_columns unavailable (%s); falling back to table rebuild", fast_err)
+
+            # Fallback: read all data, append column, recreate table.
+            self._rebuild_with_color_column()
+
+        except Exception as e:
+            logger.warning(
+                "Could not add 'color' column — colour filtering will be "
+                "unavailable for existing images until a full reindex: %s", e
+            )
+
+    def _rebuild_with_color_column(self) -> None:
+        """Rebuild the LanceDB table to insert a null 'color' column."""
+        existing = self.table.to_arrow()
+        n = len(existing)
+        logger.info("Adding 'color' column by rebuilding table (%d rows) …", n)
+
+        # Append null color column then reorder to match the target schema.
+        with_color = existing.append_column(
+            pa.field("color", pa.utf8()),
+            pa.array([None] * n, type=pa.utf8()),
+        )
+        target_cols = [f.name for f in self._schema()]
+        ordered = with_color.select([c for c in target_cols if c in with_color.schema.names])
+
+        self._db.drop_table(_TABLE_NAME)
+        self._table = self._db.create_table(_TABLE_NAME, data=ordered)
+        logger.info("Table rebuilt with 'color' column (%d rows)", self._table.count_rows())
 
     # ------------------------------------------------------------------
     # Read helpers — column-selective scans via the underlying lance dataset
@@ -100,6 +154,20 @@ class ImageStore:
             logger.warning("Could not read hashes from store: %s", e)
             return {}
 
+    def get_paths_missing_color(self) -> set[str]:
+        """Return paths of images that have no colour label yet."""
+        if self.count() == 0:
+            return set()
+        try:
+            has_col = "color" in {f.name for f in self.table.schema}
+            if not has_col:
+                return self.get_all_paths()
+            data = self._read_columns(["path", "color"])
+            return {p for p, c in zip(data["path"], data["color"]) if c is None}
+        except Exception as e:
+            logger.warning("Could not read paths missing color: %s", e)
+            return set()
+
     def get_all_paths(self) -> set[str]:
         """Return the set of all indexed paths."""
         if self.count() == 0:
@@ -131,11 +199,13 @@ class ImageStore:
         """Insert or update records, keyed on 'path'."""
         if not records:
             return
+        schema_fields = {f.name for f in self.table.schema}
+        safe = [{k: v for k, v in r.items() if k in schema_fields} for r in records]
         (
             self.table.merge_insert("path")
             .when_matched_update_all()
             .when_not_matched_insert_all()
-            .execute(records)
+            .execute(safe)
         )
 
     def delete_stale(self, valid_paths: set[str]) -> int:
@@ -159,7 +229,6 @@ class ImageStore:
             escaped = [p.replace("'", "''") for p in batch]
             expr = "path IN (" + ", ".join(f"'{p}'" for p in escaped) + ")"
             self.table.delete(expr)
-
 
         logger.info("Removed %d stale records", len(stale))
         return len(stale)
@@ -188,6 +257,7 @@ class ImageStore:
         top_k: int = 20,
         deduplicate: bool = True,
         folder_filter: list[str] | None = None,
+        color_filter: list[str] | None = None,
     ) -> list[tuple[str, float]]:
         """Approximate nearest-neighbour search by cosine similarity.
 
@@ -196,17 +266,19 @@ class ImageStore:
             top_k:         number of results to return.
             deduplicate:   if True (default), only the highest-scoring image is
                            kept when multiple paths share the same file_hash.
-            folder_filter: List of POSIX folder paths; results are restricted to
-                           images under any of those folders.
+            folder_filter: List of POSIX folder paths; restricts to images under
+                           any of those folders.
+            color_filter:  List of colour bucket names; restricts to images
+                           whose dominant colour matches any in the list.
 
         Returns:
             List of (path, score) sorted by descending score.
             Score is cosine similarity in [−1, 1]; 1.0 = identical.
         """
-        # Fetch extra results so deduplication + folder post-filter still yield top_k.
+        # Inflate fetch so post-filters still yield top_k results.
         fetch_k = top_k * 4 if deduplicate else top_k
-        if folder_filter:
-            fetch_k = fetch_k * 5  # inflate further to survive the folder filter
+        if folder_filter or color_filter:
+            fetch_k = fetch_k * 5
         results = (
             self.table.search(vector.tolist(), vector_column_name="embedding")
             .metric("cosine")
@@ -217,6 +289,10 @@ class ImageStore:
         if folder_filter:
             prefixes = tuple(Path(f).as_posix().rstrip('/') + '/' for f in folder_filter)
             results = [r for r in results if any(r["path"].startswith(p) for p in prefixes)]
+
+        if color_filter:
+            color_set = set(color_filter)
+            results = [r for r in results if r.get("color") in color_set]
 
         if deduplicate:
             seen_hashes: set[str] = set()
@@ -233,6 +309,51 @@ class ImageStore:
 
         # LanceDB cosine metric returns distance = 1 − similarity.
         return [(r["path"], round(1.0 - r["_distance"], 4)) for r in results]
+
+    def browse(
+        self,
+        folder_filter: list[str] | None = None,
+        color_filter: list[str] | None = None,
+        top_k: int = 60,
+    ) -> list[dict]:
+        """Return images matching filters without a semantic query (filter-only scan).
+
+        Results are ordered newest-indexed first.  Score is omitted (None).
+        """
+        if self.count() == 0:
+            return []
+        try:
+            has_color = "color" in {f.name for f in self.table.schema}
+            cols = ["path", "indexed_at"] + (["color"] if has_color else [])
+            data = self._read_columns(cols)
+
+            n      = len(data["path"])
+            paths  = data["path"]
+            times  = data["indexed_at"]
+            colors = data["color"] if has_color else [None] * n
+
+            color_set       = set(color_filter) if color_filter else None
+            folder_prefixes = (
+                tuple(Path(f).as_posix().rstrip("/") + "/" for f in folder_filter)
+                if folder_filter else None
+            )
+
+            out: list[tuple[str, float]] = []
+            for p, c, t in zip(paths, colors, times):
+                if color_set and c not in color_set:
+                    continue
+                if folder_prefixes and not any(p.startswith(pref) for pref in folder_prefixes):
+                    continue
+                out.append((p, t or 0.0))
+
+            out.sort(key=lambda x: x[1], reverse=True)
+            return [
+                {"path": p, "filename": Path(p).name, "score": None}
+                for p, _ in out[:top_k]
+            ]
+        except Exception as e:
+            logger.warning("browse failed: %s", e)
+            return []
 
     # ------------------------------------------------------------------
     # Stats

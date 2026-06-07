@@ -17,6 +17,7 @@ def search(
     model: ModelManager,
     top_k: int = 20,
     folder_filter: list[str] | None = None,
+    color_filter: list[str] | None = None,
 ) -> list[tuple[str, float]]:
     """Search the index with a natural language query.
 
@@ -27,6 +28,8 @@ def search(
         top_k:         Maximum number of results to return.
         folder_filter: Optional list of POSIX folder paths; restricts results to
                        images under any of those folders.
+        color_filter:  Optional list of colour bucket names; restricts results to
+                       images whose dominant colour matches any in the list.
 
     Returns:
         List of (path, score) tuples, sorted by descending cosine similarity.
@@ -36,7 +39,7 @@ def search(
         return []
 
     vector = model.encode_text([query])[0]
-    results = store.search(vector, top_k=top_k, folder_filter=folder_filter)
+    results = store.search(vector, top_k=top_k, folder_filter=folder_filter, color_filter=color_filter)
 
     # Convert stored posix paths back to OS-native paths.
     results = [(str(Path(p)), score) for p, score in results]

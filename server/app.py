@@ -10,8 +10,6 @@ Endpoints:
 
 from __future__ import annotations
 
-print("Starting up...")
-
 import io
 import logging
 import threading
@@ -25,6 +23,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
 from semantic_search import load_config
+from semantic_search.indexer import load_image
 from semantic_search.models import ModelManager
 from semantic_search.search import search as _search
 from semantic_search.store import ImageStore
@@ -40,9 +39,7 @@ _HERE = Path(__file__).parent
 _CONFIG_PATH = _HERE.parent / "config.yaml"
 
 cfg = load_config(_CONFIG_PATH)
-print("Loading model...")
 model = ModelManager(cfg["model_variant"], cfg["device"])
-print("Opening index...")
 store = ImageStore(cfg["db_path"], embedding_dim=model.embedding_dim)
 
 # ---------------------------------------------------------------------------
@@ -59,6 +56,8 @@ templates = Jinja2Templates(directory=_HERE / "templates")
 class _ReindexJob:
     def __init__(self):
         self.running = False
+        self.progress = 0
+        self.total = 0
         self.last_result: dict | None = None
         self.last_run: float | None = None
         self._lock = threading.Lock()
@@ -69,7 +68,14 @@ class _ReindexJob:
             if self.running:
                 return False
             self.running = True
+            self.progress = 0
+            self.total = 0
             return True
+
+    def set_progress(self, done: int, total: int) -> None:
+        with self._lock:
+            self.progress = done
+            self.total = total
 
     def finish(self, result: dict):
         with self._lock:
@@ -81,6 +87,8 @@ class _ReindexJob:
         with self._lock:
             return {
                 "running": self.running,
+                "progress": self.progress,
+                "total": self.total,
                 "last_result": self.last_result,
                 "last_run": self.last_run,
             }
@@ -123,16 +131,38 @@ async def folders_endpoint():
     return {"folders": store.get_all_folders()}
 
 
+@app.get("/browse")
+async def browse_endpoint(
+    folder: list[str] = Query(default=[]),
+    color: list[str] = Query(default=[]),
+    top: int = Query(default=60, ge=1, le=200),
+):
+    """Filter-only scan — no semantic query needed."""
+    if store.count() == 0:
+        return {"results": [], "error": "Index is empty."}
+    results = store.browse(
+        folder_filter=folder or None,
+        color_filter=color or None,
+        top_k=top,
+    )
+    return {"results": results}
+
+
 @app.get("/search")
 async def search_endpoint(
     q: str = Query(min_length=1, max_length=500),
     top: int = Query(default=40, ge=1, le=200),
     folder: list[str] = Query(default=[]),
+    color: list[str] = Query(default=[]),
 ):
     if store.count() == 0:
         return {"results": [], "error": "Index is empty. Run `semantic-search index` first."}
 
-    results = _search(q, store, model, top_k=top, folder_filter=folder or None)
+    results = _search(
+        q, store, model, top_k=top,
+        folder_filter=folder or None,
+        color_filter=color or None,
+    )
     return {
         "results": [
             {"path": path, "filename": Path(path).name, "score": score}
@@ -157,7 +187,9 @@ async def thumb(
     try:
         from PIL import Image
 
-        img = Image.open(file_path).convert("RGB")
+        img = load_image(file_path)
+        if img is None:
+            raise HTTPException(status_code=422, detail="Could not decode image")
         img.thumbnail((size, size), Image.LANCZOS)
 
         buf = io.BytesIO()
@@ -167,8 +199,10 @@ async def thumb(
         return Response(
             content=buf.getvalue(),
             media_type="image/jpeg",
-            headers={"Cache-Control": "no-cache"},
+            headers={"Cache-Control": "public, max-age=3600"},
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Failed to serve thumb for %s: %s", path, e)
         raise HTTPException(status_code=500, detail="Could not load image")
@@ -218,6 +252,7 @@ async def similar_endpoint(
     path: str,
     top: int = Query(default=40, ge=1, le=200),
     folder: list[str] = Query(default=[]),
+    color: list[str] = Query(default=[]),
 ):
     if store.count() == 0:
         return {"results": [], "error": "Index is empty."}
@@ -227,7 +262,11 @@ async def similar_endpoint(
         raise HTTPException(status_code=404, detail="Image not in index")
 
     posix_path = Path(path).as_posix()
-    results = store.search(embedding, top_k=top + 1, folder_filter=folder or None)
+    results = store.search(
+        embedding, top_k=top + 1,
+        folder_filter=folder or None,
+        color_filter=color or None,
+    )
     # Exclude the query image itself (it will be the top hit with score ~1.0).
     # store.search returns posix paths; compare against normalised posix_path.
     results = [(p, s) for p, s in results if p != posix_path][:top]
@@ -256,6 +295,7 @@ def _run_reindex():
             model=model,
             supported_extensions=cfg["supported_extensions"],
             batch_size=cfg["batch_size"],
+            progress_callback=_job.set_progress,
         )
         logger.info("Reindex complete: %s", result)
     except Exception as e:
