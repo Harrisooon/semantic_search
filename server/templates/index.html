@@ -469,6 +469,33 @@
     }
     .lb-btn:hover { border-color: rgba(255,255,255,0.4); color: #eee; }
     .lb-btn.copied { color: #4ade80; border-color: #4ade80; }
+
+    /* ── Drag-and-drop image search ── */
+    #drop-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 200;
+      background: rgba(0,0,0,0.75);
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+    }
+    #drop-overlay.active { display: flex; }
+    #drop-overlay .drop-box {
+      border: 2px dashed rgba(255,255,255,0.35);
+      border-radius: 12px;
+      padding: 48px 72px;
+      color: var(--muted);
+      font-size: 16px;
+      text-align: center;
+      line-height: 1.8;
+    }
+    #drop-overlay .drop-box strong {
+      display: block;
+      font-size: 20px;
+      color: #eee;
+    }
   </style>
 </head>
 <body>
@@ -522,7 +549,15 @@
   <div id="grid">
     <div class="placeholder">
       <strong>Your reference library, searchable.</strong>
-      Type any descriptive phrase in the search bar above.
+      Type any descriptive phrase in the search bar above — or drop an image anywhere to find similar references.
+    </div>
+  </div>
+
+  <!-- Drag-and-drop image search -->
+  <div id="drop-overlay">
+    <div class="drop-box">
+      <strong>Drop image to search</strong>
+      finds visually similar references in your library
     </div>
   </div>
 
@@ -532,6 +567,7 @@
     <div id="lightbox-bar" onclick="event.stopPropagation()">
       <span id="lightbox-path"></span>
       <button class="lb-btn" id="lb-copy-btn" onclick="lbCopyPath()">copy path</button>
+      <button class="lb-btn" id="lb-copy-file-btn" onclick="lbCopyFile()">copy file</button>
       <button class="lb-btn" onclick="lbFindSimilar()">find similar</button>
     </div>
   </div>
@@ -600,14 +636,16 @@ const lightbox    = document.getElementById('lightbox');
 
     function triggerFilteredSearch() {
       const hasFilters = selectedFolders.size > 0 || selectedColors.size > 0;
-      if (similarBanner.classList.contains('active') && currentSimilarPath) {
+      if (similarBanner.classList.contains('active') && currentDropFile) {
+        runImageSearch(currentDropFile);
+      } else if (similarBanner.classList.contains('active') && currentSimilarPath) {
         runSimilar({ stopPropagation: () => {} }, currentSimilarPath);
       } else if (currentQuery) {
         runSearch(currentQuery);
       } else if (hasFilters) {
         runBrowse();
       } else {
-        grid.innerHTML = '<div class="placeholder"><strong>Your reference library, searchable.</strong>Type any descriptive phrase in the search bar above.</div>';
+        grid.innerHTML = '<div class="placeholder"><strong>Your reference library, searchable.</strong>Type any descriptive phrase in the search bar above — or drop an image anywhere to find similar references.</div>';
         setStatus('Type a query to search your library.');
       }
     }
@@ -694,7 +732,7 @@ const lightbox    = document.getElementById('lightbox');
       clearTimeout(debounceTimer);
       const q = searchInput.value.trim();
       if (!q) {
-        grid.innerHTML = '<div class="placeholder"><strong>Your reference library, searchable.</strong>Type any descriptive phrase in the search bar above.</div>';
+        grid.innerHTML = '<div class="placeholder"><strong>Your reference library, searchable.</strong>Type any descriptive phrase in the search bar above — or drop an image anywhere to find similar references.</div>';
         setStatus('');
         currentQuery = '';
         return;
@@ -788,6 +826,7 @@ const lightbox    = document.getElementById('lightbox');
               ${isGif(r.path) ? '<span class="gif-badge">GIF</span>' : ''}
               <div class="card-actions">
                 <button class="btn-copy" onclick="copyPath(event, this, '${escAttr(r.path)}')">copy path</button>
+                <button class="btn-copy" onclick="copyFile(event, this, '${escAttr(r.path)}')">copy file</button>
                 <button class="btn-similar" onclick="runSimilar(event, '${escAttr(r.path)}')">find similar</button>
               </div>
             </div>
@@ -859,6 +898,29 @@ const lightbox    = document.getElementById('lightbox');
     }
 
 
+    // ── Copy file (real file on the OS clipboard, via the local server) ──
+    async function copyFile(e, btn, path) {
+      e.stopPropagation();
+      try {
+        const res = await fetch(`/copy_file?path=${encodeURIComponent(path)}`, {
+          method: 'POST',
+          headers: { 'X-Requested-With': 'semantic_search' },
+        });
+        if (!res.ok) throw new Error();
+        btn.textContent = 'copied!';
+        btn.classList.add('copied');
+        setTimeout(() => { btn.textContent = 'copy file'; btn.classList.remove('copied'); }, 1500);
+      } catch {
+        btn.textContent = 'failed';
+        setTimeout(() => { btn.textContent = 'copy file'; }, 1500);
+      }
+    }
+
+    function lbCopyFile() {
+      const btn = document.getElementById('lb-copy-file-btn');
+      copyFile({ stopPropagation: () => {} }, btn, lbPath.textContent);
+    }
+
     // ── Copy path ──
     async function copyPath(e, btn, path) {
       e.stopPropagation();
@@ -884,6 +946,7 @@ const lightbox    = document.getElementById('lightbox');
     async function runSimilar(e, path) {
       e.stopPropagation();
       currentSimilarPath = path;
+      currentDropFile = null;
       setStatus('', true);
       currentQuery = '';
       searchInput.value = '';
@@ -916,9 +979,89 @@ const lightbox    = document.getElementById('lightbox');
       similarBanner.classList.remove('active');
       similarThumb.src = '';
       currentSimilarPath = null;
-      grid.innerHTML = '<div class="placeholder"><strong>Your reference library, searchable.</strong>Type any descriptive phrase in the search bar above.</div>';
+      currentDropFile = null;
+      if (dropObjectUrl) { URL.revokeObjectURL(dropObjectUrl); dropObjectUrl = null; }
+      grid.innerHTML = '<div class="placeholder"><strong>Your reference library, searchable.</strong>Type any descriptive phrase in the search bar above — or drop an image anywhere to find similar references.</div>';
       setStatus('Type a query to search your library.');
     }
+
+    // ── Search by image (drag-and-drop or paste) ──
+    const dropOverlay = document.getElementById('drop-overlay');
+    let currentDropFile = null;
+    let dropObjectUrl   = null;
+    let dragDepth       = 0;
+
+    async function runImageSearch(file) {
+      currentDropFile    = file;
+      currentSimilarPath = null;
+      currentQuery       = '';
+      searchInput.value  = '';
+
+      const label = file.name || 'pasted image';
+      if (dropObjectUrl) URL.revokeObjectURL(dropObjectUrl);
+      dropObjectUrl = URL.createObjectURL(file);
+      similarThumb.src = dropObjectUrl;
+      similarLabel.textContent = `Similar to: ${label}`;
+      similarBanner.classList.add('active');
+      setStatus('', true);
+
+      try {
+        const fp   = buildFilterParams();
+        const form = new FormData();
+        form.append('file', file, label);
+        const res  = await fetch(`/search_by_image?top=${currentTopK}${fp ? '&' + fp : ''}`,
+                                 { method: 'POST', body: form });
+        const data = await res.json();
+
+        if (file !== currentDropFile) return; // stale
+
+        if (data.loading) {
+          setStatus('Search model is still loading…', true);
+          setTimeout(() => { if (file === currentDropFile) runImageSearch(file); }, 1500);
+          return;
+        }
+        if (!res.ok || data.error) {
+          const msg = data.detail || data.error || 'Unknown error';
+          setStatus(`Error: ${msg}`);
+          grid.innerHTML = `<div class="placeholder"><strong>Error</strong>${escHtml(String(msg))}</div>`;
+          return;
+        }
+        const results = data.results || [];
+        renderResults(results, null);
+        const noun = results.length === 1 ? 'result' : 'results';
+        setStatus(`${results.length} ${noun} visually similar to "${label}"`);
+      } catch (err) {
+        setStatus(`Error: ${err.message}`);
+      }
+    }
+
+    window.addEventListener('dragenter', e => {
+      if (!e.dataTransfer || ![...e.dataTransfer.types].includes('Files')) return;
+      e.preventDefault();
+      dragDepth++;
+      dropOverlay.classList.add('active');
+    });
+    window.addEventListener('dragover', e => e.preventDefault());
+    window.addEventListener('dragleave', () => {
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) dropOverlay.classList.remove('active');
+    });
+    window.addEventListener('drop', e => {
+      e.preventDefault();
+      dragDepth = 0;
+      dropOverlay.classList.remove('active');
+      const file = [...(e.dataTransfer.files || [])].find(f => f.type.startsWith('image/'));
+      if (file) runImageSearch(file);
+    });
+
+    window.addEventListener('paste', e => {
+      if (e.target === searchInput) return; // pasting text in the search box
+      const item = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith('image/'));
+      if (item) {
+        const f = item.getAsFile();
+        if (f) runImageSearch(f);
+      }
+    });
 
     // Typing in search bar clears similar mode
     searchInput.addEventListener('focus', () => {

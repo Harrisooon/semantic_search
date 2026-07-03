@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import io
 import logging
+import struct
+import sys
 import threading
 import time
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
@@ -311,6 +313,140 @@ async def similar_endpoint(
         ],
         "query_path": path,
         "query_filename": Path(path).name,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Copy-file-to-clipboard endpoint
+#
+# Puts the actual file on the OS clipboard (Windows CF_HDROP — the same
+# format Explorer uses for Ctrl+C), so pasting into Explorer/Discord/Slack
+# pastes the real file, not a re-encoded thumbnail. Animated GIFs stay
+# animated. Browser JS cannot do this, but the server runs locally.
+# ---------------------------------------------------------------------------
+
+def _set_clipboard_files(paths: list[Path]) -> None:
+    if sys.platform != "win32":
+        raise NotImplementedError("Copy file is only supported on Windows")
+
+    import ctypes
+    from ctypes import wintypes
+
+    CF_HDROP = 15
+    GMEM_MOVEABLE = 0x0002
+
+    kernel32 = ctypes.windll.kernel32
+    user32 = ctypes.windll.user32
+    # Explicit signatures — the ctypes defaults truncate 64-bit handles.
+    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    kernel32.GlobalLock.restype = wintypes.LPVOID
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+    user32.SetClipboardData.restype = wintypes.HANDLE
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+
+    # DROPFILES header (20 bytes: file-list offset, drop point, fNC, fWide=1
+    # for UTF-16) followed by a double-NUL-terminated UTF-16 path list.
+    file_list = "\0".join(str(p) for p in paths) + "\0\0"
+    payload = struct.pack("<IiiII", 20, 0, 0, 0, 1) + file_list.encode("utf-16-le")
+
+    hglobal = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(payload))
+    if not hglobal:
+        raise RuntimeError("GlobalAlloc failed")
+    ptr = kernel32.GlobalLock(hglobal)
+    if not ptr:
+        kernel32.GlobalFree(hglobal)
+        raise RuntimeError("GlobalLock failed")
+    ctypes.memmove(ptr, payload, len(payload))
+    kernel32.GlobalUnlock(hglobal)
+
+    # Another app may briefly hold the clipboard — retry a few times.
+    for attempt in range(10):
+        if user32.OpenClipboard(None):
+            break
+        time.sleep(0.05)
+    else:
+        kernel32.GlobalFree(hglobal)
+        raise RuntimeError("Could not open clipboard (held by another application)")
+
+    try:
+        user32.EmptyClipboard()
+        if not user32.SetClipboardData(CF_HDROP, hglobal):
+            kernel32.GlobalFree(hglobal)
+            raise RuntimeError("SetClipboardData failed")
+        # On success the system owns the memory — do not free it.
+    finally:
+        user32.CloseClipboard()
+
+
+@app.post("/copy_file")
+async def copy_file_endpoint(path: str, request: Request):
+    # Require a custom header so cross-origin pages can't trigger this —
+    # it forces a CORS preflight, which fails for other origins.
+    if request.headers.get("x-requested-with") != "semantic_search":
+        raise HTTPException(status_code=403, detail="Bad request origin")
+
+    file_path = Path(path)
+    if not _is_allowed(file_path):
+        raise HTTPException(status_code=403, detail="Path not in a watched folder")
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        _set_clipboard_files([file_path.resolve()])
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        logger.error("Clipboard copy failed for %s: %s", path, e)
+        raise HTTPException(status_code=500, detail=f"Clipboard copy failed: {e}")
+    return {"copied": True}
+
+
+# ---------------------------------------------------------------------------
+# Search-by-image endpoint (drag-and-drop upload — the image does not need
+# to be in the index)
+# ---------------------------------------------------------------------------
+
+@app.post("/search_by_image")
+async def search_by_image(
+    file: UploadFile = File(...),
+    top: int = Query(default=40, ge=1, le=200),
+    folder: list[str] = Query(default=[]),
+    color: list[str] = Query(default=[]),
+):
+    if model is None:
+        if _model_error:
+            return {"results": [], "error": f"Model failed to load: {_model_error}"}
+        return {"results": [], "loading": True}
+
+    if store.count() == 0:
+        return {"results": [], "error": "Index is empty. Run `semantic-search index` first."}
+
+    data = await file.read()
+    if len(data) > 100 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Image too large (100 MB max)")
+
+    from PIL import Image
+
+    try:
+        img = Image.open(io.BytesIO(data)).convert("RGB")
+    except Exception:
+        raise HTTPException(status_code=422, detail="Could not decode image")
+
+    embedding = model.encode_image([img])[0]
+    results = store.search(
+        embedding, top_k=top,
+        folder_filter=folder or None,
+        color_filter=color or None,
+    )
+    return {
+        "results": [
+            {"path": p, "filename": Path(p).name, "score": s}
+            for p, s in results
+        ],
+        "query_filename": file.filename,
     }
 
 
