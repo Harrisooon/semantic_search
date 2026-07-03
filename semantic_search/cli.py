@@ -50,6 +50,7 @@ def _get_model_and_store(cfg: dict):
 
 def cmd_index(args: argparse.Namespace, cfg: dict) -> None:
     from .indexer import index_folders
+    from .store import ImageStore
 
     folders = args.paths or cfg["watched_folders"]
     if not folders:
@@ -57,13 +58,22 @@ def cmd_index(args: argparse.Namespace, cfg: dict) -> None:
             "No folders specified and watched_folders is empty in config.yaml."
         )
 
-    model, store = _get_model_and_store(cfg)
+    store = ImageStore(cfg["db_path"])
+
+    def load_model():
+        """Deferred — only called if some files actually need embedding."""
+        from .models import ModelManager
+
+        model = ModelManager(cfg["model_variant"], cfg["device"])
+        # Make sure a fresh table is created with the real embedding dim.
+        store.embedding_dim = model.embedding_dim
+        return model
 
     print(f"Indexing {len(folders)} folder(s) ...")
     stats = index_folders(
         folders=folders,
         store=store,
-        model=model,
+        model=load_model,
         supported_extensions=cfg["supported_extensions"],
         batch_size=cfg["batch_size"],
     )

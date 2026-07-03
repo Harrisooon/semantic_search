@@ -11,7 +11,7 @@ import logging
 import time
 from collections import Counter
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 from PIL import Image
@@ -155,7 +155,7 @@ def _walk_folder(folder: Path, supported_extensions: set[str]) -> list[Path]:
 def index_folders(
     folders: list[str | Path],
     store: ImageStore,
-    model: ModelManager,
+    model: ModelManager | Callable[[], ModelManager],
     supported_extensions: set[str],
     batch_size: int = 32,
     progress_callback=None,
@@ -164,6 +164,11 @@ def index_folders(
 
     Only files whose blake2b hash has changed since the last run are
     re-embedded. Records for files no longer on disk are removed.
+
+    Args:
+        model: a loaded ModelManager, or a zero-arg callable returning one —
+            the callable is only invoked if any files actually need embedding,
+            so a no-change run never pays the model load.
 
     Returns a summary dict with keys: total, skipped, indexed, failed,
     stale_removed.
@@ -196,26 +201,52 @@ def index_folders(
     if not all_files:
         return {"total": 0, "skipped": 0, "indexed": 0, "failed": 0, "stale_removed": 0}
 
-    # 2. Load stored hashes and determine what needs re-indexing.
-    stored_hashes = store.get_all_hashes()
+    # 2. Diff against the store to determine what needs re-indexing.
+    #    Files whose stored mtime matches are trusted without re-reading their
+    #    bytes; only new or touched files get hashed.
+    stored_index = store.get_hash_index()
     missing_color = store.get_paths_missing_color()
     valid_paths: set[str] = set()
-    to_index: list[tuple[Path, str]] = []
+    to_index: list[tuple[Path, str, float]] = []
+    mtime_refresh: list[tuple[str, float]] = []
+    hashed = 0
 
-    for f in tqdm(all_files, desc="Hashing", unit="file", leave=False):
+    for f in tqdm(all_files, desc="Scanning", unit="file", leave=False):
         norm_path = f.as_posix()
         valid_paths.add(norm_path)
+        try:
+            mtime = f.stat().st_mtime
+        except OSError as e:
+            logger.warning("Cannot stat %s: %s", f, e)
+            continue
+
+        stored = stored_index.get(norm_path)
+        needs_color = norm_path in missing_color
+        if stored is not None and stored[1] == mtime and not needs_color:
+            continue  # unchanged — skip without reading file contents
+
         try:
             current_hash = compute_hash(f)
         except OSError as e:
             logger.warning("Cannot hash %s: %s", f, e)
             continue
-        if stored_hashes.get(norm_path) != current_hash or norm_path in missing_color:
-            to_index.append((f, current_hash))
+        hashed += 1
+
+        if stored is not None and stored[0] == current_hash and not needs_color:
+            # Touched but content identical — just refresh the stored mtime
+            # so the fast path applies next run.
+            mtime_refresh.append((norm_path, mtime))
+            continue
+
+        to_index.append((f, current_hash, mtime))
+
+    if mtime_refresh:
+        store.update_mtimes(mtime_refresh)
 
     skipped = len(all_files) - len(to_index)
     logger.info(
-        "%d file(s) to embed, %d unchanged (skipped)", len(to_index), skipped
+        "%d file(s) to embed, %d unchanged (%d hashed, rest skipped by mtime)",
+        len(to_index), skipped, hashed,
     )
 
     # 3. Remove records for files that have been deleted from disk.
@@ -231,6 +262,9 @@ def index_folders(
         }
 
     # 4. Embed and store in batches.
+    if callable(model):
+        model = model()
+
     processed = 0
     failed = 0
 
@@ -239,21 +273,21 @@ def index_folders(
         batch = to_index[i : i + batch_size]
 
         # Load images, skipping any that can't be opened.
-        loaded: list[tuple[Path, str, Image.Image]] = []
-        for file_path, file_hash in batch:
+        loaded: list[tuple[Path, str, float, Image.Image]] = []
+        for file_path, file_hash, mtime in batch:
             img = load_image(file_path)
             if img is None:
                 logger.warning("Could not load image, skipping: %s", file_path)
                 failed += 1
                 continue
-            loaded.append((file_path, file_hash, img))
+            loaded.append((file_path, file_hash, mtime, img))
 
         if not loaded:
             continue
 
         # Forward pass through the vision encoder.
         try:
-            embeddings = model.encode_image([item[2] for item in loaded])
+            embeddings = model.encode_image([item[3] for item in loaded])
         except Exception as e:
             logger.error("Embedding failed for batch starting at index %d: %s", i, e)
             failed += len(loaded)
@@ -262,14 +296,16 @@ def index_folders(
         # Build records and upsert into the store.
         now = time.time()
         records = []
-        for (file_path, file_hash, img), embedding in zip(loaded, embeddings):
+        for (file_path, file_hash, mtime, img), embedding in zip(loaded, embeddings):
             records.append(
                 {
                     "path": file_path.as_posix(),
                     "file_hash": file_hash,
                     "filename": file_path.name,
                     "ext": file_path.suffix.lower(),
-                    "mtime": file_path.stat().st_mtime,
+                    # mtime captured at scan time, before hashing — if the file
+                    # changes mid-index, the next run's mtime check catches it.
+                    "mtime": mtime,
                     "indexed_at": now,
                     "embedding": embedding.tolist(),
                     "color": _dominant_color(img),

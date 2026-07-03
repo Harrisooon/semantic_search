@@ -76,6 +76,11 @@ class ImageStore:
         startup to avoid any risk of corrupting an existing table.
         """
         try:
+            # Fresh DB — nothing to migrate; the table is created with the
+            # current schema (and correct embedding dim) on first upsert.
+            if self._table is None and _TABLE_NAME not in self._db.table_names():
+                return
+
             existing = {f.name for f in self.table.schema}
             if "color" in existing:
                 return
@@ -144,18 +149,35 @@ class ImageStore:
         df = self.table.to_pandas()
         return {col: df[col].tolist() for col in columns}
 
-    def get_all_hashes(self) -> dict[str, str]:
-        """Return {path: file_hash} for every indexed file."""
+    def get_hash_index(self) -> dict[str, tuple[str, float]]:
+        """Return {path: (file_hash, mtime)} for every indexed file."""
         if self.count() == 0:
             return {}
         try:
-            data = self._read_columns(["path", "file_hash"])
-            result = dict(zip(data["path"], data["file_hash"]))
+            data = self._read_columns(["path", "file_hash", "mtime"])
+            result = {
+                p: (h, m if m is not None else 0.0)
+                for p, h, m in zip(data["path"], data["file_hash"], data["mtime"])
+            }
             logger.info("Loaded %d stored hashes", len(result))
             return result
         except Exception as e:
             logger.warning("Could not read hashes from store: %s", e)
             return {}
+
+    def update_mtimes(self, updates: list[tuple[str, float]]) -> None:
+        """Refresh stored mtimes for files whose content did not change.
+
+        Keeps the mtime fast-path accurate for files that were touched
+        (rewritten with identical bytes) so they aren't re-hashed every run.
+        Failure is harmless — the file is simply re-hashed next time.
+        """
+        for path, mtime in updates:
+            try:
+                escaped = path.replace("'", "''")
+                self.table.update(where=f"path = '{escaped}'", values={"mtime": mtime})
+            except Exception as e:
+                logger.debug("Could not refresh mtime for %s: %s", path, e)
 
     def get_paths_missing_color(self) -> set[str]:
         """Return paths of images that have no colour label yet."""
