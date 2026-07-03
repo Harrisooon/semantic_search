@@ -721,6 +721,12 @@ const lightbox    = document.getElementById('lightbox');
 
         if (q !== currentQuery) return; // stale
 
+        if (data.loading) {
+          setStatus('Search model is still loading…', true);
+          setTimeout(() => { if (q === currentQuery) runSearch(q); }, 1500);
+          return;
+        }
+
         if (data.error) {
           setStatus(data.error);
           grid.innerHTML = `<div class="placeholder"><strong>Error</strong>${data.error}</div>`;
@@ -851,6 +857,7 @@ const lightbox    = document.getElementById('lightbox');
       closeLightbox();
       runSimilar({ stopPropagation: () => {} }, path);
     }
+
 
     // ── Copy path ──
     async function copyPath(e, btn, path) {

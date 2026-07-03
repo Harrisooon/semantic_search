@@ -124,6 +124,9 @@ class ImageStore:
 
     def count(self) -> int:
         try:
+            # Don't create the table just to count it — a fresh DB has 0 rows.
+            if self._table is None and _TABLE_NAME not in self._db.table_names():
+                return 0
             return self.table.count_rows()
         except Exception:
             return 0

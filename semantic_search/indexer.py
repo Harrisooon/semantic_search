@@ -11,13 +11,16 @@ import logging
 import time
 from collections import Counter
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
 
-from .models import ModelManager
 from .store import ImageStore
+
+if TYPE_CHECKING:
+    from .models import ModelManager
 
 logger = logging.getLogger(__name__)
 

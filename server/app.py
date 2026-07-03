@@ -23,24 +23,48 @@ from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
 from semantic_search import load_config
-from semantic_search.indexer import load_image
-from semantic_search.models import ModelManager
-from semantic_search.search import search as _search
 from semantic_search.store import ImageStore
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
 
 # ---------------------------------------------------------------------------
-# Startup — load config, model, store once
+# Startup — load config and store now; load the model in a background thread
+# so the server (and UI) come up immediately. Only /search and reindexing
+# need the model; browse/folders/thumbs/similar all work from the store.
 # ---------------------------------------------------------------------------
 
 _HERE = Path(__file__).parent
 _CONFIG_PATH = _HERE.parent / "config.yaml"
 
 cfg = load_config(_CONFIG_PATH)
-model = ModelManager(cfg["model_variant"], cfg["device"])
-store = ImageStore(cfg["db_path"], embedding_dim=model.embedding_dim)
+store = ImageStore(cfg["db_path"])
+
+model = None  # set by _load_model_background once ready
+_model_error: str | None = None
+_model_ready = threading.Event()
+
+
+def _load_model_background():
+    """Import torch/transformers and load the model off the critical path."""
+    global model, _model_error
+    try:
+        from semantic_search.models import ModelManager
+
+        m = ModelManager(cfg["model_variant"], cfg["device"])
+        # On a fresh install the table is created lazily; make sure it gets
+        # the real embedding dim rather than the ImageStore default.
+        store.embedding_dim = m.embedding_dim
+        model = m
+        logger.info("Model ready — semantic search enabled")
+    except Exception as e:
+        _model_error = f"{type(e).__name__}: {e}"
+        logger.error("Model failed to load: %s", e)
+    finally:
+        _model_ready.set()
+
+
+threading.Thread(target=_load_model_background, daemon=True).start()
 
 # ---------------------------------------------------------------------------
 # App
@@ -155,8 +179,15 @@ async def search_endpoint(
     folder: list[str] = Query(default=[]),
     color: list[str] = Query(default=[]),
 ):
+    if model is None:
+        if _model_error:
+            return {"results": [], "error": f"Model failed to load: {_model_error}"}
+        return {"results": [], "loading": True}
+
     if store.count() == 0:
         return {"results": [], "error": "Index is empty. Run `semantic-search index` first."}
+
+    from semantic_search.search import search as _search
 
     results = _search(
         q, store, model, top_k=top,
@@ -186,6 +217,8 @@ async def thumb(
 
     try:
         from PIL import Image
+
+        from semantic_search.indexer import load_image
 
         img = load_image(file_path)
         if img is None:
@@ -289,6 +322,9 @@ def _run_reindex():
     from semantic_search.indexer import index_folders
     result = None
     try:
+        _model_ready.wait()
+        if model is None:
+            raise RuntimeError(f"Model failed to load: {_model_error}")
         result = index_folders(
             folders=cfg["watched_folders"],
             store=store,
